@@ -1,7 +1,7 @@
 // The four AI jobs: food photo estimate, recipe generation, weekly report, chat.
 import { z } from 'zod';
-import type { Food, Nutrients, Recipe, RecipeIngredient } from '../core/model';
-import { CONSTRAINTS_TEXT, checkText, forbiddenIngredient } from '../core/rules/guardrails';
+import type { Food, Nutrients, Profile, Recipe, RecipeIngredient } from '../core/model';
+import { age, checkText, constraintsText, forbiddenIngredient } from '../core/rules/guardrails';
 import { parseJson, type ImagePart, type LlmMessage, type LlmProvider } from './provider';
 
 const num = z.coerce.number().finite().nonnegative();
@@ -59,6 +59,7 @@ export interface RecipeRequest {
   sodiumPerPortionMaxMg: number | null;
   tasteProfile: string;
   pantry: Food[];
+  profile: Profile;
   /** when set, adapt this recipe instead of creating one from scratch */
   base?: Recipe;
 }
@@ -75,17 +76,21 @@ function matchPantry(name: string, pantry: Food[]): Food | undefined {
 }
 
 export async function generateRecipe(ai: LlmProvider, req: RecipeRequest): Promise<RecipeResult> {
-  const system = `You are a meal-prep recipe developer for a 17-year-old lifter doing a maintenance-calorie recomp, cooking in Finland.
-${CONSTRAINTS_TEXT}
-Recipe rules:
-- No added salt anywhere and no salt substitutes. Never use stock cubes, soy sauce, fish sauce, ready sauces, spice mixes with salt, cheese, cold cuts, tortillas or bread. Build flavour with onion, garlic, ginger, acid (lemon, lime, vinegar), herbs, pure spices, chili, tomato paste, slow cooking and browning.
+  const p = req.profile;
+  const sodiumRules = p.lowSodium
+    ? `- No added salt anywhere and no salt substitutes. Never use stock cubes, soy sauce, fish sauce, ready sauces, spice mixes with salt, cheese, cold cuts, tortillas or bread. Build flavour with onion, garlic, ginger, acid (lemon, lime, vinegar), herbs, pure spices, chili, tomato paste, slow cooking and browning.
 - Canned beans/tomatoes must be the "no added salt" kind.
+${req.sodiumPerPortionMaxMg ? `- Sodium per portion must stay under ${req.sodiumPerPortionMaxMg} mg.` : '- Keep sodium per portion as low as practical (aim under 400 mg).'}`
+    : '- Season normally but keep sodium moderate (aim under ~800 mg per portion).';
+  const system = `You are a meal-prep recipe developer for a ${age(p.birthYear)}-year-old who trains (goal: ${p.goal}), cooking in Finland.
+${constraintsText(p)}
+Recipe rules:
+${sodiumRules}
 - Each portion: about ${req.proteinPerPortionG} g protein, a carb source included (rice, potato, pasta, lentils), realistic Finnish supermarket ingredients (K-Market, Prisma, Lidl).
-${req.sodiumPerPortionMaxMg ? `- Sodium per portion must stay under ${req.sodiumPerPortionMaxMg} mg.` : '- Keep sodium per portion as low as practical (aim under 400 mg).'}
 - Prefer freezer-friendly batch dinners unless asked otherwise.
 - Ingredient amounts in grams (liquids: ml counted as grams). per100 = nutrition per 100 g of that ingredient as used (raw/dry unless stated). Reuse the exact names and values from the pantry list when an ingredient is in it.
-- Steps: short, numbered order, practical, no salt.
-Learn from the user's taste profile: repeat what they liked, avoid what they disliked, and apply their past edits by default.
+- Steps: short, in order, practical.
+Learn from the taste profile: repeat what they liked, avoid what they disliked, and apply their past edits by default.
 Return ONLY JSON: {"name","servings","freezerFriendly","fridgeDays","tags":[],"ingredients":[{"name","grams","per100":{"kcal","protein","carbs","fat","sodiumMg"}}],"steps":[]}`;
 
   const pantry = req.pantry.map((f) => `${f.name}: ${f.per100.kcal} kcal, P ${f.per100.protein}, C ${f.per100.carbs}, F ${f.per100.fat}, Na ${f.per100.sodiumMg} mg`).join('\n');
@@ -108,7 +113,7 @@ ${pantry}`;
   const removed: string[] = [];
   const ingredients: RecipeIngredient[] = [];
   for (const i of g.ingredients) {
-    const bad = forbiddenIngredient(i.name);
+    const bad = forbiddenIngredient(i.name, p.lowSodium);
     if (bad) {
       removed.push(`${i.name} (${bad})`);
       continue;
@@ -116,7 +121,7 @@ ${pantry}`;
     const known = matchPantry(i.name, req.pantry);
     ingredients.push(known ? { name: known.name, grams: i.grams, per100: known.per100, foodId: known.id } : { name: i.name, grams: i.grams, per100: i.per100 as Nutrients });
   }
-  const issues = checkText([g.name, ...g.steps].join('\n'));
+  const issues = checkText([g.name, ...g.steps].join('\n'), p);
   return {
     recipe: {
       name: g.name,
@@ -137,14 +142,19 @@ ${pantry}`;
 
 // ---------- 3. Weekly report ----------
 
-export const COACH_SYSTEM = `You are a direct, honest strength-and-conditioning coach for one athlete: 17-year-old male, 176 cm, ~68 kg, 2+ years of lifting.
-Goal: aesthetic, athletic build (shoulders, lats, upper chest, arms, tight waist) plus strong running fitness, via a 12-week recomp at maintenance calories.
-The training program is the athlete's own. You adjust within the rules; you never write a new program.
-${CONSTRAINTS_TEXT}
-Do not mention salt substitutes or supplements at all, not even to warn against them.
-Style: plain, specific, numbers over adjectives, no hype, no emojis. Short.`;
+const GOAL_LABEL = { recomp: 'body recomposition at maintenance calories', 'lean-bulk': 'lean bulk (slow, controlled weight gain)', cut: 'fat loss while keeping muscle' } as const;
 
-export async function weeklyReport(ai: LlmProvider, input: unknown, program: string): Promise<{ text: string; issues: string[] }> {
+export function coachSystem(p: Profile, weightKg: number | null): string {
+  const who = [`${age(p.birthYear)}-year-old`, p.sex === 'other' ? 'athlete' : p.sex, `${p.heightCm} cm`, weightKg ? `~${Math.round(weightKg)} kg` : null].filter(Boolean).join(', ');
+  return `You are a direct, honest strength-and-conditioning coach for one athlete${p.displayName ? ` named ${p.displayName}` : ''}: ${who}.
+Goal: ${GOAL_LABEL[p.goal]}.${p.goalText.trim() ? ` In their words: ${p.goalText.trim()}` : ''}
+The training program is the athlete's own. You adjust within the rules; you never write a new program.
+${constraintsText(p)}
+${p.lowSodium ? 'Do not mention salt substitutes at all, not even to warn against them. ' : ''}Do not mention supplements at all.
+Style: plain, specific, numbers over adjectives, no hype, no emojis. Short.`;
+}
+
+export async function weeklyReport(ai: LlmProvider, input: unknown, program: string, profile: Profile, weightKg: number | null): Promise<{ text: string; issues: string[] }> {
   const user = `Here is my week as JSON (rule outputs are in "flags"):
 ${JSON.stringify(input)}
 
@@ -157,19 +167,19 @@ Write the weekly report in Markdown with exactly these sections:
 ## Next week's focus
 (1–3 numbered points, each one concrete action)
 Max ~180 words total. Reference the actual numbers. If data is missing for an area, say so in one line instead of guessing.`;
-  const text = await ai.generate(COACH_SYSTEM, [{ role: 'user', text: user }], { temperature: 0.4 });
-  return { text, issues: checkText(text) };
+  const text = await ai.generate(coachSystem(profile, weightKg), [{ role: 'user', text: user }], { temperature: 0.4 });
+  return { text, issues: checkText(text, profile) };
 }
 
 // ---------- 4. Ask the coach ----------
 
-export async function askCoach(ai: LlmProvider, history: LlmMessage[], context: string): Promise<{ text: string; issues: string[] }> {
-  const system = `${COACH_SYSTEM}
+export async function askCoach(ai: LlmProvider, history: LlmMessage[], context: string, profile: Profile, weightKg: number | null): Promise<{ text: string; issues: string[] }> {
+  const system = `${coachSystem(profile, weightKg)}
 
 Context: the athlete's last 4 weeks (aggregated) and program:
 ${context}
 
 Answer the question in under ~150 words unless more detail is asked for. Use the data; say when the data doesn't cover something.`;
   const text = await ai.generate(system, history.slice(-12), { temperature: 0.5 });
-  return { text, issues: checkText(text) };
+  return { text, issues: checkText(text, profile) };
 }

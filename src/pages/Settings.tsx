@@ -6,9 +6,13 @@ import { getProvider } from '../ai/provider';
 import { WEEKDAYS } from '../core/dates';
 import type { RunPlanDay, Settings } from '../core/model';
 import { proteinTarget } from '../core/rules/nutrition';
+import { adminOverview, changePassword, createInvite, deleteAccount, signOut, type AdminOverview } from '../app/auth';
+import { currentAccount } from '../db/account';
 import { getMeta, save, setMeta } from '../db/repo';
 import { syncNow, workerFetch } from '../db/sync';
-import { Button, Card, ErrorNote, Field, NumInput, Page, cx, inputCls } from '../ui/kit';
+
+const account = currentAccount();
+import { Button, Card, ErrorNote, Field, LiveText, NumInput, Page, cx, inputCls } from '../ui/kit';
 
 export default function SettingsPage() {
   const nav = useNavigate();
@@ -18,27 +22,32 @@ export default function SettingsPage() {
 
   return (
     <Page title="Settings" back={() => nav(-1)}>
-      <Card title="Targets">
-        <div className="mb-3 rounded-xl bg-surface-2 p-3">
-          <div className="flex justify-between">
-            <span>Protein</span>
+      <AccountCard />
+      {account?.isAdmin && <AdminCard />}
+
+      <Card title="Profile" action={<Link to="/profile" className="text-sm text-accent">Edit ›</Link>}>
+        <ul className="space-y-1 text-sm">
+          <li className="flex justify-between">
+            <span className="text-muted">Goal</span>
+            <span>{{ recomp: 'Recomp', 'lean-bulk': 'Lean bulk', cut: 'Cut' }[s.goal]}</span>
+          </li>
+          <li className="flex justify-between">
+            <span className="text-muted">Protein</span>
             <span className="tnum">
-              {s.proteinGPerKg} g/kg → {proteinTarget(bw, s.proteinGPerKg)} g/day
+              {s.proteinGPerKg} g/kg → {proteinTarget(bw, s.proteinGPerKg)} g/day{s.proteinLocked ? ' · locked' : ''}
             </span>
-          </div>
-          <p className="mt-1 text-xs text-faint">Fixed by your medical plan. The app and coach never change it.</p>
-        </div>
-        <Field label="Sodium ceiling (mg/day)" hint="The number from your doctor or dietitian. Used for the daily sodium bar and recipe limits.">
-          <NumInput value={s.sodiumCeilingMg} onChange={(v) => set({ sodiumCeilingMg: v })} placeholder="e.g. 2000" />
-        </Field>
-        <div className="grid grid-cols-2 gap-2">
-          <Field label="Height (cm)">
-            <NumInput value={s.heightCm} onChange={(v) => v && set({ heightCm: v })} />
-          </Field>
-          <Field label="Birth year">
-            <NumInput value={s.birthYear} onChange={(v) => v && set({ birthYear: v })} />
-          </Field>
-        </div>
+          </li>
+          <li className="flex justify-between">
+            <span className="text-muted">Sodium</span>
+            <span className="tnum">{s.lowSodium ? `low-sodium${s.sodiumCeilingMg ? ` · ≤ ${s.sodiumCeilingMg} mg/day` : ' · set a ceiling'}` : 'normal'}</span>
+          </li>
+          {s.dietNotes && (
+            <li className="flex justify-between gap-3">
+              <span className="text-muted">Diet notes</span>
+              <span className="truncate">{s.dietNotes}</span>
+            </li>
+          )}
+        </ul>
       </Card>
 
       <Card title="Program" action={<Link to="/program" className="text-sm text-accent">Edit program ›</Link>}>
@@ -80,12 +89,12 @@ export default function SettingsPage() {
 
       <Card title="Food">
         <Field label="Taste preferences for AI recipes" hint="Likes, dislikes, allergies, budget, kitchen gear. Ratings and edits are learned on top of this.">
-          <textarea className={cx(inputCls, 'h-24')} value={s.foodPreferences} onChange={(e) => set({ foodPreferences: e.target.value })} placeholder="e.g. love spicy, no mushrooms, cheap, one big pot" />
+          <LiveText multiline className="h-24" value={s.foodPreferences} onCommit={(v) => set({ foodPreferences: v })} placeholder="e.g. love spicy, no mushrooms, cheap, one big pot" />
         </Field>
       </Card>
 
       <AiSettings s={s} set={set} />
-      <SyncSettings s={s} set={set} />
+      <IntegrationsCard />
       <DataSettings lastExportAt={s.lastExportAt} />
     </Page>
   );
@@ -120,7 +129,7 @@ function AiSettings({ s, set }: { s: Settings; set: (c: Partial<Settings>) => vo
             <input type="password" autoComplete="off" className={inputCls} value={gemini} onChange={(e) => setGemini(e.target.value)} />
           </Field>
           <Field label="Model">
-            <input className={inputCls} value={s.geminiModel} onChange={(e) => set({ geminiModel: e.target.value })} />
+            <LiveText value={s.geminiModel} onCommit={(v) => set({ geminiModel: v.trim() })} />
           </Field>
           <p className="mb-3 rounded-lg bg-warn/10 px-3 py-2 text-xs text-warn">
             Gemini's free tier may use what you send (including food photos) to improve Google's models. The weekly report only sends aggregated weekly numbers.
@@ -133,17 +142,17 @@ function AiSettings({ s, set }: { s: Settings; set: (c: Partial<Settings>) => vo
             <input type="password" autoComplete="off" className={inputCls} value={claude} onChange={(e) => setClaude(e.target.value)} />
           </Field>
           <Field label="Model">
-            <input className={inputCls} value={s.anthropicModel} onChange={(e) => set({ anthropicModel: e.target.value })} />
+            <LiveText value={s.anthropicModel} onCommit={(v) => set({ anthropicModel: v.trim() })} />
           </Field>
         </>
       )}
       {s.aiProvider === 'ollama' && (
         <>
           <Field label="Ollama URL" hint="Works from the computer running Ollama. Start it with OLLAMA_ORIGINS set to this site's address.">
-            <input className={inputCls} value={s.ollamaUrl} onChange={(e) => set({ ollamaUrl: e.target.value })} />
+            <LiveText value={s.ollamaUrl} onCommit={(v) => set({ ollamaUrl: v.trim() })} />
           </Field>
           <Field label="Model" hint="Food photo scanning needs a vision model (e.g. llava, llama3.2-vision).">
-            <input className={inputCls} value={s.ollamaModel} onChange={(e) => set({ ollamaModel: e.target.value })} />
+            <LiveText value={s.ollamaModel} onCommit={(v) => set({ ollamaModel: v.trim() })} />
           </Field>
         </>
       )}
@@ -173,9 +182,178 @@ function AiSettings({ s, set }: { s: Settings; set: (c: Partial<Settings>) => vo
   );
 }
 
-function SyncSettings({ s, set }: { s: Settings; set: (c: Partial<Settings>) => void }) {
-  const [token, setToken] = useSecret('key:sync');
+function AccountCard() {
+  const nav = useNavigate();
   const status = useSyncStatus();
+  const [pw, setPw] = useState<'none' | 'change' | 'delete'>('none');
+  const [oldPw, setOldPw] = useState('');
+  const [newPw, setNewPw] = useState('');
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  if (!account) {
+    return (
+      <Card title="Account">
+        <p className="mb-3 text-sm text-muted">Using this device only. Sign in to sync between your devices and connect Withings or Oura.</p>
+        <Button variant="primary" className="w-full" onClick={() => nav('/login')}>
+          Sign in or create account
+        </Button>
+      </Card>
+    );
+  }
+
+  const run = async (fn: () => Promise<unknown>, ok: string) => {
+    setErr(null);
+    setMsg(null);
+    try {
+      await fn();
+      setMsg(ok);
+      setPw('none');
+      setOldPw('');
+      setNewPw('');
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  return (
+    <Card title="Account">
+      <div className="mb-2 flex items-center justify-between">
+        <div>
+          <div className="font-medium">
+            {account.username} {account.isAdmin && <span className="ml-1 rounded-full bg-accent/15 px-2 py-0.5 text-xs text-accent">admin</span>}
+          </div>
+          <div className="text-xs text-faint">{account.server.replace(/^https?:\/\//, '')}</div>
+        </div>
+        <Button size="sm" onClick={() => syncNow()}>
+          Sync now
+        </Button>
+      </div>
+      <p className={cx('mb-3 text-sm', status.state === 'error' || status.state === 'signed-out' ? 'text-bad' : 'text-muted')}>
+        {status.state === 'syncing' && 'Syncing…'}
+        {status.state === 'idle' && (status.message ?? `Synced ${status.at ? new Date(status.at).toLocaleTimeString() : ''}`)}
+        {status.state === 'error' && `Sync error: ${status.message}`}
+        {status.state === 'signed-out' && status.message}
+        {status.state === 'off' && 'Sync off'}
+      </p>
+      {status.state === 'signed-out' && (
+        <Button variant="primary" className="mb-2 w-full" onClick={() => nav('/login')}>
+          Sign in again
+        </Button>
+      )}
+      <div className="grid grid-cols-2 gap-2">
+        <Button size="sm" onClick={() => signOut(false)}>
+          Sign out
+        </Button>
+        <Button size="sm" onClick={() => setPw(pw === 'change' ? 'none' : 'change')}>
+          Change password
+        </Button>
+      </div>
+      <Button size="sm" variant="ghost" className="mt-1 w-full" onClick={() => confirm("Sign out and delete this account's data from this device? It stays on the server.") && signOut(true)}>
+        Sign out and remove data from this device
+      </Button>
+      {pw === 'change' && (
+        <div className="mt-3 rounded-xl bg-surface-2 p-3">
+          <Field label="Current password">
+            <input type="password" autoComplete="current-password" className={inputCls} value={oldPw} onChange={(e) => setOldPw(e.target.value)} />
+          </Field>
+          <Field label="New password (8+ characters)">
+            <input type="password" autoComplete="new-password" className={inputCls} value={newPw} onChange={(e) => setNewPw(e.target.value)} />
+          </Field>
+          <Button variant="primary" className="w-full" disabled={!oldPw || newPw.length < 8} onClick={() => run(() => changePassword(oldPw, newPw), 'Password changed. Other devices were signed out.')}>
+            Change password
+          </Button>
+        </div>
+      )}
+      <button className="mt-3 text-xs text-faint" onClick={() => setPw(pw === 'delete' ? 'none' : 'delete')}>
+        Delete account…
+      </button>
+      {pw === 'delete' && (
+        <div className="mt-2 rounded-xl border border-bad/30 bg-bad/10 p-3">
+          <p className="mb-2 text-sm text-bad">Deletes the account and all its data from the server and this device. Export a backup first if you want to keep anything.</p>
+          <Field label="Password">
+            <input type="password" autoComplete="current-password" className={inputCls} value={oldPw} onChange={(e) => setOldPw(e.target.value)} />
+          </Field>
+          <Button variant="danger" className="w-full" disabled={!oldPw} onClick={() => run(() => deleteAccount(oldPw), '')}>
+            Delete my account
+          </Button>
+        </div>
+      )}
+      {msg && <p className="mt-2 text-sm text-good">{msg}</p>}
+      <ErrorNote error={err} />
+    </Card>
+  );
+}
+
+function AdminCard() {
+  const [data, setData] = useState<AdminOverview | null>(null);
+  const [fresh, setFresh] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const load = () => adminOverview().then(setData).catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+  useEffect(() => {
+    load();
+  }, []);
+  const day = (ms: number | null) => (ms ? new Date(ms).toLocaleDateString() : '–');
+  return (
+    <Card title="Users (admin)">
+      {data && (
+        <ul className="mb-3 divide-y divide-line text-sm">
+          {data.users.map((u) => (
+            <li key={u.username} className="flex justify-between py-1.5">
+              <span>
+                {u.username}
+                {u.isAdmin && <span className="ml-1 text-xs text-accent">admin</span>}
+              </span>
+              <span className="text-xs text-muted tnum">
+                last seen {day(u.lastSeen)} · {u.records} records
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <Button
+        className="w-full"
+        onClick={async () => {
+          setErr(null);
+          try {
+            const r = await createInvite();
+            setFresh(r.code);
+            load();
+          } catch (e) {
+            setErr(e instanceof Error ? e.message : String(e));
+          }
+        }}
+      >
+        Create invite code
+      </Button>
+      {fresh && (
+        <div className="mt-3 rounded-xl bg-surface-2 p-3 text-center">
+          <div className="text-2xl font-semibold tracking-widest tnum">{fresh}</div>
+          <p className="mt-1 text-xs text-muted">Single use, valid 14 days. Send it with the server address: {account?.server}</p>
+          <Button size="sm" className="mt-2" onClick={() => navigator.clipboard?.writeText(`Lock-In invite\nApp: ${location.origin}${location.pathname}\nServer: ${account?.server}\nInvite code: ${fresh}`)}>
+            Copy invite message
+          </Button>
+        </div>
+      )}
+      {data && data.invites.length > 0 && (
+        <details className="mt-3">
+          <summary className="cursor-pointer text-sm text-muted">Recent invites</summary>
+          <ul className="mt-1 text-xs text-muted tnum">
+            {data.invites.map((i) => (
+              <li key={i.code} className="flex justify-between py-0.5">
+                <span>{i.code}</span>
+                <span>{i.usedBy ? `used by ${i.usedBy}` : i.expiresAt < Date.now() ? 'expired' : `open until ${day(i.expiresAt)}`}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      <ErrorNote error={err} />
+    </Card>
+  );
+}
+
+function IntegrationsCard() {
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -191,7 +369,7 @@ function SyncSettings({ s, set }: { s: Settings; set: (c: Partial<Settings>) => 
 
   async function pullNow() {
     setErr(null);
-    setMsg('Syncing Withings and Oura…');
+    setMsg('Pulling from Withings and Oura…');
     try {
       const r = (await workerFetch('/integrations/run', { method: 'POST' })) as { withings?: string; oura?: string };
       await syncNow();
@@ -203,37 +381,18 @@ function SyncSettings({ s, set }: { s: Settings; set: (c: Partial<Settings>) => 
   }
 
   return (
-    <Card title="Sync & integrations">
-      <p className="mb-3 text-xs text-faint">
-        Optional. Deploy the Worker in <code>worker/</code> (see README) to sync phone ↔ PC and pull Withings + Oura daily. Without it, everything still works on this device.
-      </p>
-      <Field label="Server URL">
-        <input className={inputCls} placeholder="https://lock-in-api.<you>.workers.dev" value={s.workerUrl} onChange={(e) => set({ workerUrl: e.target.value.trim() })} />
-      </Field>
-      <Field label="Sync token" hint="The SYNC_TOKEN secret you set on the Worker. Stored only on this device.">
-        <input type="password" autoComplete="off" className={inputCls} value={token} onChange={(e) => setToken(e.target.value)} />
-      </Field>
-      <div className="mb-3 flex items-center justify-between text-sm">
-        <span className={cx(status.state === 'error' ? 'text-bad' : 'text-muted')}>
-          {status.state === 'off' && 'Sync off'}
-          {status.state === 'syncing' && 'Syncing…'}
-          {status.state === 'idle' && (status.message ?? `Synced ${status.at ? new Date(status.at).toLocaleTimeString() : ''}`)}
-          {status.state === 'error' && `Sync error: ${status.message}`}
-        </span>
-        <Button size="sm" onClick={() => syncNow()} disabled={!s.workerUrl || !token}>
-          Sync now
-        </Button>
-      </div>
+    <Card title="Withings & Oura">
+      {!account && <p className="mb-3 text-sm text-muted">Needs an account (see Account above).</p>}
       <div className="grid grid-cols-2 gap-2">
-        <Button onClick={() => connect('withings')} disabled={!s.workerUrl || !token}>
+        <Button onClick={() => connect('withings')} disabled={!account}>
           Connect Withings
         </Button>
-        <Button onClick={() => connect('oura')} disabled={!s.workerUrl || !token}>
+        <Button onClick={() => connect('oura')} disabled={!account}>
           Connect Oura
         </Button>
       </div>
-      <Button className="mt-2 w-full" variant="ghost" onClick={pullNow} disabled={!s.workerUrl || !token}>
-        Pull Withings + Oura now
+      <Button className="mt-2 w-full" variant="ghost" onClick={pullNow} disabled={!account}>
+        Pull now
       </Button>
       {msg && <p className="mt-2 text-sm text-muted">{msg}</p>}
       <ErrorNote error={err} />

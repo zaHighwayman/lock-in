@@ -92,7 +92,7 @@ export function buildWeek(data: CoachData, refDate: string) {
   // Body
   const weights = data.body.filter((b) => b.weightKg !== undefined).map((b) => ({ date: b.date, value: b.weightKg! }));
   const waists = data.body.filter((b) => b.waistCm !== undefined).map((b) => ({ date: b.date, value: b.waistCm! }));
-  const bc = evaluateBodyComp({ weights, waists, liftTrend: trend, refDate });
+  const bc = evaluateBodyComp({ weights, waists, liftTrend: trend, refDate, goal: settings.goal });
   flags.push(...bc.flags);
 
   // Recovery
@@ -122,7 +122,7 @@ export function buildWeek(data: CoachData, refDate: string) {
   const avgOf = (k: 'protein' | 'kcal' | 'sodiumMg') => (dayTot.length ? Math.round(dayTot.reduce((a, t) => a + t[k], 0) / dayTot.length) : null);
 
   const input = {
-    week: { start: ws, end: we, programWeek: week, deload: deloadNow, deloadNext },
+    week: { start: ws, end: we, programWeek: week, deload: deloadNow, deloadNext, goal: settings.goal },
     lifting: {
       sessions: weekSessions.map((s) => s.name),
       progressionsEarned: progressions,

@@ -6,7 +6,7 @@ import { WEEKDAYS } from '../core/dates';
 import type { Exercise, LoadType, MuscleGroup, ProgramDay, ProgramItem } from '../core/model';
 import { remove, save, uid } from '../db/repo';
 import { db } from '../db/schema';
-import { Button, Card, Field, NumInput, Page, Segmented, Sheet, cx, inputCls } from '../ui/kit';
+import { Button, Card, Field, LiveText, NumInput, Page, Segmented, Sheet, cx, inputCls } from '../ui/kit';
 
 const GROUPS: MuscleGroup[] = ['chest', 'back', 'shoulders', 'biceps', 'triceps', 'quads', 'hamstrings', 'glutes', 'calves', 'core'];
 const LOADS: LoadType[] = ['barbell', 'dumbbell', 'machine', 'cable', 'bodyweight'];
@@ -90,7 +90,7 @@ function DayEditor({ day, exercises }: { day: ProgramDay; exercises: Exercise[] 
       {open && (
         <div className="mt-3">
           <div className="mb-3 flex gap-2">
-            <input className={inputCls} value={day.name} onChange={(e) => update({ name: e.target.value })} />
+            <LiveText value={day.name} onCommit={(v) => update({ name: v })} />
             <select className={cx(inputCls, 'w-24')} value={day.weekday} onChange={(e) => update({ weekday: Number(e.target.value) })}>
               {WEEKDAYS.map((w, i) => (
                 <option key={w} value={i + 1}>

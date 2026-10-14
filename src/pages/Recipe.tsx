@@ -175,14 +175,15 @@ function CookSheet({ recipe, onClose }: { recipe: Recipe; onClose: () => void })
 }
 
 function EditSheet({ recipe, onClose }: { recipe: Recipe; onClose: () => void }) {
+  const settings = useSettings();
   const [r, setR] = useState<Recipe>(structuredClone(recipe));
   const foods = useLiveQuery(() => db.foods.orderBy('name').toArray(), []) ?? [];
   const [error, setError] = useState<string | null>(null);
   const setIng = (i: number, changes: Partial<RecipeIngredient>) => setR({ ...r, ingredients: r.ingredients.map((x, j) => (j === i ? { ...x, ...changes } : x)) });
 
   async function saveIt() {
-    const bad = r.ingredients.map((i) => forbiddenIngredient(i.name)).find(Boolean);
-    if (bad) return setError(`Not allowed on your diet: ${bad}.`);
+    const bad = r.ingredients.map((i) => forbiddenIngredient(i.name, settings.lowSodium)).find(Boolean);
+    if (bad) return setError(`Not allowed on your low-sodium diet: ${bad}.`);
     const detail = describeEdit(recipe, r);
     await save('recipes', { ...r, steps: r.steps.filter((s) => s.trim()) });
     if (detail) await save('recipeFeedback', { id: uid(), recipeId: r.id, recipeName: r.name, date: today(), kind: 'edit', detail });

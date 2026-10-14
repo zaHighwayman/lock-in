@@ -29,6 +29,8 @@ jobs:
         env:
           # served at https://<user>.github.io/<repo>/
           BASE_PATH: /${{ github.event.repository.name }}/
+          # optional repo variable: pre-fills the server address on the sign-in screen
+          VITE_SERVER_URL: ${{ vars.SERVER_URL }}
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

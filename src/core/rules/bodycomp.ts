@@ -1,6 +1,7 @@
 // Rules 5–9: body composition from Withings weights and weekly waist entries.
 import { addDays, diffDays } from '../dates';
-import type { Flag } from '../model';
+import type { Flag, Goal } from '../model';
+import { maxDeficit } from './guardrails';
 
 export interface DatedValue {
   date: string;
@@ -8,6 +9,7 @@ export interface DatedValue {
 }
 
 export const MIN_WEIGH_INS = 4;
+/** recomp / lean-bulk ceiling; a cut allows up to maxDeficit('cut') */
 export const MAX_DEFICIT_KCAL = 250;
 const ADD_CARBS_KCAL = 200;
 const TRIM_CARBS_KCAL = -150;
@@ -52,6 +54,7 @@ export interface BodyCompInput {
   waists: DatedValue[];
   liftTrend: 'rising' | 'flat' | 'falling' | 'unknown';
   refDate: string;
+  goal?: Goal;
 }
 
 export interface BodyCompResult {
@@ -63,7 +66,7 @@ export interface BodyCompResult {
 }
 
 export function evaluateBodyComp(input: BodyCompInput): BodyCompResult {
-  const { weights, waists, liftTrend, refDate } = input;
+  const { weights, waists, liftTrend, refDate, goal = 'recomp' } = input;
   const avgNow = avg7(weights, refDate);
   const avg2 = avg7(weights, addDays(refDate, -14));
   const avg4 = avg7(weights, addDays(refDate, -28));
@@ -86,49 +89,47 @@ export function evaluateBodyComp(input: BodyCompInput): BodyCompResult {
     return { avgNow, change2w, change4w, waistChange4w, flags };
   }
 
-  if (change2w !== null && change2w < -0.5) {
-    flags.push({
-      rule: 6,
-      area: 'body',
-      level: 'warn',
-      title: `Weight down ${Math.abs(change2w).toFixed(1)} kg in 2 weeks`,
-      detail: 'Recomp runs at maintenance. Add one carb portion at dinner (about +200 kcal/day).',
-      kcalDelta: ADD_CARBS_KCAL,
-    });
-  } else if (change4w !== null && change4w > 0.5 && waistChange4w !== null && waistChange4w > 0.5) {
-    flags.push({
-      rule: 8,
-      area: 'body',
-      level: 'warn',
-      title: `Weight +${change4w.toFixed(1)} kg and waist +${waistChange4w.toFixed(1)} cm in 4 weeks`,
-      detail: 'Trim the dinner carb portion slightly (about −150 kcal/day). Keep every meal and the protein target.',
-      kcalDelta: TRIM_CARBS_KCAL,
-    });
-  } else if (
-    change4w !== null &&
-    Math.abs(change4w) <= 0.5 &&
-    waistChange4w !== null &&
-    waistChange4w <= 0.5 &&
-    liftTrend === 'rising'
-  ) {
-    flags.push({
-      rule: 7,
-      area: 'body',
-      level: 'good',
-      title: 'On track: change nothing',
-      detail: 'Weight steady, waist steady or down, lifts going up. That is a working recomp.',
-    });
-  } else if (waistNow === null) {
-    flags.push({ rule: 7, area: 'body', level: 'info', title: 'Log your waist this week', detail: 'Waist is the second half of the recomp check.' });
+  const kg = (v: number) => `${v > 0 ? '+' : '−'}${Math.abs(v).toFixed(1)} kg`;
+  const cm = (v: number) => `${v > 0 ? '+' : '−'}${Math.abs(v).toFixed(1)} cm`;
+
+  if (goal === 'recomp') {
+    if (change2w !== null && change2w < -0.5) {
+      flags.push({ rule: 6, area: 'body', level: 'warn', title: `Weight ${kg(change2w)} in 2 weeks`, detail: 'Recomp runs at maintenance. Add one carb portion at dinner (about +200 kcal/day).', kcalDelta: ADD_CARBS_KCAL });
+    } else if (change4w !== null && change4w > 0.5 && waistChange4w !== null && waistChange4w > 0.5) {
+      flags.push({ rule: 8, area: 'body', level: 'warn', title: `Weight ${kg(change4w)} and waist ${cm(waistChange4w)} in 4 weeks`, detail: 'Trim the dinner carb portion slightly (about −150 kcal/day). Keep every meal and the protein target.', kcalDelta: TRIM_CARBS_KCAL });
+    } else if (change4w !== null && Math.abs(change4w) <= 0.5 && waistChange4w !== null && waistChange4w <= 0.5 && liftTrend === 'rising') {
+      flags.push({ rule: 7, area: 'body', level: 'good', title: 'On track: change nothing', detail: 'Weight steady, waist steady or down, lifts going up. That is a working recomp.' });
+    }
+  } else if (goal === 'lean-bulk') {
+    // target roughly +0.25 to +0.5 kg per month
+    if (change4w !== null && change4w < 0.2) {
+      flags.push({ rule: 6, area: 'body', level: 'warn', title: `Weight ${kg(change4w)} in 4 weeks: not gaining`, detail: 'Add one carb portion a day (about +200 kcal/day).', kcalDelta: ADD_CARBS_KCAL });
+    } else if (change4w !== null && (change4w > 1.0 || (waistChange4w !== null && waistChange4w > 1.0))) {
+      flags.push({ rule: 8, area: 'body', level: 'warn', title: `Gaining fast: weight ${kg(change4w)}${waistChange4w !== null ? `, waist ${cm(waistChange4w)}` : ''} in 4 weeks`, detail: 'Slow it down: trim one carb portion slightly (about −150 kcal/day).', kcalDelta: TRIM_CARBS_KCAL });
+    } else if (change4w !== null && liftTrend !== 'falling') {
+      flags.push({ rule: 7, area: 'body', level: 'good', title: 'On track: change nothing', detail: 'Gaining slowly while lifts hold or rise. That is a lean bulk.' });
+    }
+  } else {
+    // cut: target roughly −0.25 to −0.75 kg per week
+    if (change2w !== null && change2w > -0.2) {
+      flags.push({ rule: 8, area: 'body', level: 'warn', title: `Weight ${kg(change2w)} in 2 weeks: not losing`, detail: 'Trim one carb portion (about −150 kcal/day). Keep every meal and the protein target.', kcalDelta: TRIM_CARBS_KCAL });
+    } else if (change2w !== null && change2w < -1.5) {
+      flags.push({ rule: 6, area: 'body', level: 'warn', title: `Weight ${kg(change2w)} in 2 weeks: too fast`, detail: 'Losing this fast costs muscle. Add one carb portion back (about +200 kcal/day).', kcalDelta: ADD_CARBS_KCAL });
+    } else if (change2w !== null && liftTrend !== 'falling') {
+      flags.push({ rule: 7, area: 'body', level: 'good', title: 'On track: change nothing', detail: 'Losing at a sustainable pace with lifts holding.' });
+    }
+  }
+  if (waistNow === null) {
+    flags.push({ rule: 7, area: 'body', level: 'info', title: 'Log your waist this week', detail: 'Waist is the second half of the body-composition check.' });
   }
 
-  return { avgNow, change2w, change4w, waistChange4w, flags: flags.map(enforceRule9) };
+  return { avgNow, change2w, change4w, waistChange4w, flags: flags.map((f) => enforceRule9(f, maxDeficit(goal))) };
 }
 
 /** Rule 9 — hard ceiling on any suggested deficit. Applied to every body flag. */
-export function enforceRule9(flag: Flag): Flag {
-  if (flag.kcalDelta !== undefined && flag.kcalDelta < -MAX_DEFICIT_KCAL) {
-    return { ...flag, kcalDelta: -MAX_DEFICIT_KCAL };
+export function enforceRule9(flag: Flag, cap = MAX_DEFICIT_KCAL): Flag {
+  if (flag.kcalDelta !== undefined && flag.kcalDelta < -cap) {
+    return { ...flag, kcalDelta: -cap };
   }
   return flag;
 }

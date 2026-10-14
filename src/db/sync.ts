@@ -2,6 +2,7 @@
 // the server hands out a monotonic cursor so device clock skew can't skip records.
 import { db, SYNCED_TABLES, type SyncedTable } from './schema';
 import { getMeta, onLocalChange, setMeta } from './repo';
+import { currentAccount } from './account';
 
 interface SyncRecord {
   table: SyncedTable;
@@ -11,7 +12,7 @@ interface SyncRecord {
   data: unknown;
 }
 
-export type SyncStatus = { state: 'off' | 'idle' | 'syncing' | 'error'; message?: string; at?: number };
+export type SyncStatus = { state: 'off' | 'idle' | 'syncing' | 'error' | 'signed-out'; message?: string; at?: number };
 let status: SyncStatus = { state: 'off' };
 const listeners = new Set<(s: SyncStatus) => void>();
 function setStatus(s: SyncStatus) {
@@ -25,10 +26,17 @@ export function subscribeSync(fn: (s: SyncStatus) => void) {
 }
 
 async function config() {
-  const settings = await db.settings.get('settings');
-  const token = await getMeta<string>('key:sync', '');
-  const url = settings?.workerUrl?.replace(/\/$/, '');
-  return url && token ? { url, token } : null;
+  const account = currentAccount();
+  const token = await getMeta<string>('auth:token', '');
+  return account && token ? { url: account.server.replace(/\/$/, ''), token } : null;
+}
+
+class SignedOut extends Error {}
+
+async function check(res: Response, what: string) {
+  if (res.status === 401) throw new SignedOut();
+  if (!res.ok) throw new Error(`${what} ${res.status}`);
+  return res;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -64,16 +72,14 @@ async function doSync() {
       maxSeen = Math.max(maxSeen, ts.updatedAt);
     }
     for (let i = 0; i < out.length; i += 400) {
-      const res = await fetch(`${cfg.url}/sync/push`, { method: 'POST', headers, body: JSON.stringify({ records: out.slice(i, i + 400) }) });
-      if (!res.ok) throw new Error(`push ${res.status}`);
+      await check(await fetch(`${cfg.url}/sync/push`, { method: 'POST', headers, body: JSON.stringify({ records: out.slice(i, i + 400) }) }), 'push');
     }
     await setMeta('sync:lastPush', maxSeen);
 
     // pull
     let cursor = await getMeta<number>('sync:cursor', 0);
     for (let page = 0; page < 50; page++) {
-      const res = await fetch(`${cfg.url}/sync/pull?since=${cursor}`, { headers });
-      if (!res.ok) throw new Error(`pull ${res.status}`);
+      const res = await check(await fetch(`${cfg.url}/sync/pull?since=${cursor}`, { headers }), 'pull');
       const body = (await res.json()) as { records: SyncRecord[]; cursor: number; more: boolean };
       await applyRemote(body.records);
       cursor = body.cursor;
@@ -82,7 +88,8 @@ async function doSync() {
     }
     setStatus({ state: 'idle', at: Date.now() });
   } catch (e) {
-    setStatus({ state: 'error', message: e instanceof Error ? e.message : String(e), at: status.at });
+    if (e instanceof SignedOut) setStatus({ state: 'signed-out', message: 'Session expired. Sign in again to keep syncing.', at: status.at });
+    else setStatus({ state: 'error', message: e instanceof Error ? e.message : String(e), at: status.at });
   }
 }
 
@@ -113,11 +120,12 @@ export function startSync() {
 /** Calls an authenticated Worker endpoint (integrations). */
 export async function workerFetch(path: string, init: RequestInit = {}) {
   const cfg = await config();
-  if (!cfg) throw new Error('Set the sync server URL and token in Settings first.');
+  if (!cfg) throw new Error('Sign in to an account first (Settings → Account).');
   const res = await fetch(`${cfg.url}${path}`, {
     ...init,
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.token}`, ...(init.headers ?? {}) },
   });
-  if (!res.ok) throw new Error(`${res.status}: ${(await res.text()).slice(0, 200)}`);
-  return res.json();
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error ?? `Server error ${res.status}`);
+  return body;
 }

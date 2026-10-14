@@ -93,13 +93,22 @@ export const SEED_PROGRAM: ProgramDay[] = [
   },
 ];
 
+/** A new person's starting point. The profile screen fills in the rest on first run. */
 export const DEFAULT_SETTINGS: Settings = {
   id: 'settings',
   updatedAt: 0,
-  proteinGPerKg: 1.5,
+  profileDone: false,
+  displayName: '',
+  sex: 'other',
+  heightCm: 175,
+  birthYear: 2008,
+  goal: 'recomp',
+  goalText: '',
+  proteinGPerKg: 1.6,
+  proteinLocked: false,
+  lowSodium: false,
   sodiumCeilingMg: null,
-  heightCm: 176,
-  birthYear: 2009,
+  dietNotes: '',
   programStartDate: null,
   deloadEvery: 6,
   recompWeeks: 12,
@@ -120,6 +129,28 @@ export const DEFAULT_SETTINGS: Settings = {
   workerUrl: '',
   foodPreferences: '',
 };
+
+/** The original owner's profile (from the build spec). Applied once to installs that predate profiles. */
+export const ORIGINAL_PROFILE: Partial<Settings> = {
+  profileDone: true,
+  sex: 'male',
+  heightCm: 176,
+  birthYear: 2009,
+  goal: 'recomp',
+  goalText: 'Aesthetic, athletic build (broad shoulders, wide lats, upper chest, arms, tight waist) plus strong running fitness. 12-week recomp at maintenance, steered by weight and waist trends. Not bulky.',
+  proteinGPerKg: 1.5,
+  proteinLocked: true,
+  lowSodium: true,
+  dietNotes: 'Medical low-sodium diet (kidney condition).',
+};
+
+/** Settings saved before profiles existed belong to the original single user: give them that profile. */
+export async function migrateLegacySettings() {
+  const s = await db.settings.get('settings');
+  if (!s || (s as Partial<Settings>).profileDone !== undefined) return;
+  // old values (height, sodium ceiling, keys…) win; the new profile fields come from the original profile
+  await db.settings.put({ ...DEFAULT_SETTINGS, ...ORIGINAL_PROFILE, ...s, profileDone: true, updatedAt: Date.now() });
+}
 
 const N = (kcal: number, protein: number, carbs: number, fat: number, sodiumMg: number): Nutrients => ({ kcal, protein, carbs, fat, sodiumMg });
 

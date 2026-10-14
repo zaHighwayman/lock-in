@@ -1,47 +1,76 @@
-// Fixed constraints checked in code, independent of what any LLM says.
-// Medical low-sodium diet, fixed 1.5 g/kg protein, no aggressive cutting, no supplement/medication advice.
+// Constraints checked in code, independent of what any LLM says. Driven by each person's profile:
+// low-sodium mode (no salt, no salt substitutes), a locked protein target, a deficit ceiling per goal,
+// and for everyone: no skipped meals, no supplement or medication advice.
+import type { Goal, Profile } from '../model';
 
-interface Pattern {
-  re: RegExp;
-  issue: string;
+export type GuardProfile = Pick<Profile, 'lowSodium' | 'proteinLocked' | 'proteinGPerKg' | 'goal' | 'dietNotes' | 'birthYear'>;
+
+/** The original single-user setup: medical low-sodium diet, protein fixed at 1.5 g/kg, recomp. */
+export const STRICT_PROFILE: GuardProfile = { lowSodium: true, proteinLocked: true, proteinGPerKg: 1.5, goal: 'recomp', dietNotes: '', birthYear: 2009 };
+
+/** Largest daily deficit any rule or the coach may suggest. */
+export function maxDeficit(goal: Goal): number {
+  return goal === 'cut' ? 500 : 250;
 }
 
-const PATTERNS: Pattern[] = [
-  { re: /pansuola|potassium chloride|kaliumkloridi|salt substitute|suolankorvike|lo-?salt|nosalt\b|low[- ]sodium salt|mineral salt|mineraalisuola/i, issue: 'Mentions a salt substitute (potassium chloride). Not allowed on your diet.' },
-  { re: /(add|more|extra|increase|pinch of|season(ed)? with|sprinkle)\s+(some\s+)?(sea\s+)?salt|salt to taste|more sodium|increase (your )?sodium|suolaa maun mukaan|lisää suolaa/i, issue: 'Suggests adding salt or sodium.' },
-  { re: /\b(skip|skipping|cut out)\b[^.]{0,20}\b(meal|breakfast|lunch|dinner)\b|intermittent fasting|\bomad\b/i, issue: 'Suggests skipping meals.' },
-  { re: /(reduce|lower|change|cut|drop)\s+(your\s+)?protein (target|intake|goal)|(?<![\d.])(1\.[0-46-9]|[02-9](\.\d)?)\s*g\s*(\/|per)\s*kg/i, issue: 'Talks about changing the 1.5 g/kg protein target.' },
-  { re: /(deficit|cut) of\s*(\d{3,4})\s*kcal|(\d{3,4})\s*kcal\s*(daily\s+)?deficit/i, issue: 'deficit' },
-  { re: /\b(creatine|pre-?workout|fat burner|supplement(s|ation)?|whey isolate tablets|melatonin|ashwagandha|caffeine pills?|sarms?|steroids?|medication|ibuprofen|painkiller)\b/i, issue: 'Mentions supplements or medication. The coach does not give that advice.' },
-];
+const SALT_SUBSTITUTE = /pansuola|potassium chloride|kaliumkloridi|salt substitute|suolankorvike|lo-?salt|nosalt\b|low[- ]sodium salt|mineral salt|mineraalisuola/i;
+const ADD_SALT = /(add|more|extra|increase|pinch of|season(ed)? with|sprinkle)\s+(some\s+)?(sea\s+)?salt|salt to taste|more sodium|increase (your )?sodium|suolaa maun mukaan|lisää suolaa/i;
+const SKIP_MEALS = /\b(skip|skipping|cut out)\b[^.]{0,20}\b(meal|breakfast|lunch|dinner)\b|intermittent fasting|\bomad\b/i;
+const CHANGE_PROTEIN = /(reduce|lower|change|cut|drop|raise|increase)\s+(your\s+)?protein (target|goal)/i;
+const PROTEIN_NUMBER = /(?<![\d.])(\d(?:\.\d+)?)\s*g\s*(?:\/|per)\s*kg/gi;
+const DEFICIT = /(?:deficit|cut) of\s*(\d{3,4})\s*kcal|(\d{3,4})\s*kcal\s*(?:daily\s+|a day\s+)?deficit/i;
+const SUPPLEMENTS = /\b(creatine|pre-?workout|fat burner|supplement(s|ation)?|melatonin|ashwagandha|caffeine pills?|sarms?|steroids?|medication|ibuprofen|painkiller)\b/i;
 
 /** Returns human-readable issues; empty when the text is clean. */
-export function checkText(text: string): string[] {
-  const issues = new Set<string>();
-  for (const p of PATTERNS) {
-    const m = text.match(p.re);
-    if (!m) continue;
-    if (p.issue === 'deficit') {
-      const kcal = Number(m[2] ?? m[3]);
-      if (kcal > 250) issues.add(`Suggests a ${kcal} kcal deficit (max is 250 kcal/day).`);
-      continue;
-    }
-    issues.add(p.issue);
+export function checkText(text: string, p: GuardProfile = STRICT_PROFILE): string[] {
+  const issues: string[] = [];
+  if (p.lowSodium && SALT_SUBSTITUTE.test(text)) issues.push('Mentions a salt substitute (potassium chloride). Not allowed on a low-sodium medical diet.');
+  if (p.lowSodium && ADD_SALT.test(text)) issues.push('Suggests adding salt or sodium.');
+  if (SKIP_MEALS.test(text)) issues.push('Suggests skipping meals.');
+  if (p.proteinLocked) {
+    const other = [...text.matchAll(PROTEIN_NUMBER)].map((m) => Number(m[1])).find((v) => Math.abs(v - p.proteinGPerKg) > 0.05);
+    if (CHANGE_PROTEIN.test(text) || other !== undefined) issues.push(`Talks about changing the fixed ${p.proteinGPerKg} g/kg protein target.`);
   }
-  return [...issues];
+  const d = text.match(DEFICIT);
+  if (d) {
+    const kcal = Number(d[1] ?? d[2]);
+    const cap = maxDeficit(p.goal);
+    if (kcal > cap) issues.push(`Suggests a ${kcal} kcal deficit (max is ${cap} kcal/day).`);
+  }
+  if (SUPPLEMENTS.test(text)) issues.push('Mentions supplements or medication. The coach does not give that advice.');
+  return issues;
 }
 
-/** Ingredient names that are never allowed in a recipe (vs watchlist items, which are just flagged). */
-export function forbiddenIngredient(name: string): string | null {
+/** Ingredients never allowed in a recipe for this person (vs watchlist items, which are only flagged). */
+export function forbiddenIngredient(name: string, lowSodium = true): string | null {
+  if (!lowSodium) return null;
   const n = name.toLowerCase();
-  if (/pansuola|potassium chloride|kaliumkloridi|salt substitute|suolankorvike|mineral salt|mineraalisuola/.test(n)) return 'salt substitute';
+  if (SALT_SUBSTITUTE.test(n)) return 'salt substitute';
   if (/^(sea |table |kosher |flaky |)salt$|^suola$|^merisuola$/.test(n.trim())) return 'added salt';
   return null;
 }
 
-export const CONSTRAINTS_TEXT = `Fixed, non-negotiable constraints (set by the user's medical plan):
-- Low-sodium diet for a kidney condition. Never suggest adding salt, raising sodium, or any salt substitute (potassium chloride, Pansuola, "mineral salt"). Prefer no-salt ingredients and flag high-sodium ones.
-- Protein target is fixed at 1.5 g per kg bodyweight. Do not suggest changing it.
-- No aggressive cutting: never suggest a deficit larger than 250 kcal/day, never suggest skipping meals or fasting.
-- No supplement or medication advice of any kind.
-- The deterministic rule outputs are authoritative. Explain them. If you disagree with one, say so explicitly and give the reason; never silently override it.`;
+export function age(birthYear: number, now = new Date()): number {
+  return now.getFullYear() - birthYear;
+}
+
+export function constraintsText(p: GuardProfile): string {
+  const lines = ['Constraints (non-negotiable, set by the athlete):'];
+  if (p.lowSodium) {
+    lines.push('- Medical low-sodium diet. Never suggest adding salt or raising sodium, and never suggest any salt substitute. Prefer no-salt ingredients and point out high-sodium ones.');
+  }
+  lines.push(
+    p.proteinLocked
+      ? `- Protein target is fixed at ${p.proteinGPerKg} g per kg bodyweight (medical). Do not suggest changing it.`
+      : `- Protein target: ${p.proteinGPerKg} g per kg bodyweight.`,
+  );
+  lines.push(`- Never suggest a deficit larger than ${maxDeficit(p.goal)} kcal/day. Never suggest skipping meals or fasting.`);
+  if (age(p.birthYear) < 18) lines.push('- The athlete is under 18: keep nutrition advice conservative and growth-friendly.');
+  lines.push('- No supplement or medication advice of any kind.');
+  if (p.dietNotes.trim()) lines.push(`- Diet notes from the athlete (always respect): ${p.dietNotes.trim()}`);
+  lines.push('- The deterministic rule outputs are authoritative. Explain them. If you disagree with one, say so explicitly and give the reason; never silently override it.');
+  return lines.join('\n');
+}
+
+/** Kept for callers/tests that use the original fixed setup. */
+export const CONSTRAINTS_TEXT = constraintsText(STRICT_PROFILE);

@@ -1,7 +1,7 @@
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useEffect, useRef, useState } from 'react';
 import { loadCoachData, programSummary } from '../app/actions';
-import { useSettings } from '../app/hooks';
+import { useBodyweight, useSettings } from '../app/hooks';
 import { getProvider } from '../ai/provider';
 import { askCoach, weeklyReport } from '../ai/tasks';
 import { buildWeek } from '../core/coach/weekly';
@@ -37,6 +37,7 @@ function Issues({ issues }: { issues?: string[] }) {
 
 function Reports() {
   const settings = useSettings();
+  const bw = useBodyweight();
   const reports = useLiveQuery(() => db.coachReports.orderBy('weekStart').reverse().toArray(), []) ?? [];
   const live = useLiveQuery(async () => buildWeek(await loadCoachData(), today()), []);
   const [busy, setBusy] = useState(false);
@@ -54,7 +55,7 @@ function Reports() {
       let provider = 'rules only';
       if (settings.aiProvider !== 'none') {
         const ai = await getProvider(settings);
-        const r = await weeklyReport(ai, week.input, await programSummary());
+        const r = await weeklyReport(ai, week.input, await programSummary(), settings, bw);
         summary = r.text;
         issues = r.issues;
         provider = ai.name;
@@ -97,6 +98,7 @@ function Reports() {
 
 function Chat() {
   const settings = useSettings();
+  const bw = useBodyweight();
   const messages = useLiveQuery(() => db.chat.orderBy('createdAt').toArray(), []) ?? [];
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
@@ -117,7 +119,7 @@ function Chat() {
       const context = `${JSON.stringify(weeks)}\n\nProgram:\n${await programSummary()}`;
       const ai = await getProvider(settings);
       const history = [...messages, userMsg].map((m) => ({ role: m.role === 'coach' ? ('assistant' as const) : ('user' as const), text: m.text }));
-      const r = await askCoach(ai, history, context);
+      const r = await askCoach(ai, history, context, settings, bw);
       await save('chat', { id: uid(), role: 'coach', text: r.text, createdAt: Date.now(), guardrailIssues: r.issues });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

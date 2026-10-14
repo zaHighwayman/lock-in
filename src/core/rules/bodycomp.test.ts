@@ -87,3 +87,28 @@ describe('rule 9: deficit ceiling', () => {
     }
   });
 });
+
+describe('goals other than recomp', () => {
+  const waists = [{ date: addDays(REF, -28), value: 76 }, { date: REF, value: 76.3 }];
+  it('lean bulk: flat weight → add carbs, steady gain → on track, fast gain → trim', () => {
+    const flat = evaluateBodyComp({ weights: series(START, 35, () => 68), waists, liftTrend: 'rising', refDate: REF, goal: 'lean-bulk' });
+    expect(flat.flags[0]).toMatchObject({ rule: 6, kcalDelta: 200 });
+    const steady = evaluateBodyComp({ weights: series(START, 35, (i) => 68 + i * 0.012), waists, liftTrend: 'flat', refDate: REF, goal: 'lean-bulk' });
+    expect(steady.flags[0]).toMatchObject({ rule: 7, level: 'good' });
+    const fast = evaluateBodyComp({ weights: series(START, 35, (i) => 68 + i * 0.05), waists, liftTrend: 'rising', refDate: REF, goal: 'lean-bulk' });
+    expect(fast.flags[0]).toMatchObject({ rule: 8, kcalDelta: -150 });
+  });
+  it('cut: not losing → trim, too fast → add back, steady loss → on track', () => {
+    const stuck = evaluateBodyComp({ weights: series(START, 35, () => 75), waists, liftTrend: 'flat', refDate: REF, goal: 'cut' });
+    expect(stuck.flags[0]).toMatchObject({ rule: 8, kcalDelta: -150 });
+    const crash = evaluateBodyComp({ weights: series(START, 35, (i) => 80 - i * 0.15), waists, liftTrend: 'flat', refDate: REF, goal: 'cut' });
+    expect(crash.flags[0]).toMatchObject({ rule: 6, kcalDelta: 200 });
+    const good = evaluateBodyComp({ weights: series(START, 35, (i) => 80 - i * 0.06), waists, liftTrend: 'flat', refDate: REF, goal: 'cut' });
+    expect(good.flags[0]).toMatchObject({ rule: 7, level: 'good' });
+  });
+  it('rule 9 cap is 500 kcal on a cut and 250 otherwise', () => {
+    const f = { rule: 8, area: 'body' as const, level: 'warn' as const, title: 'x', kcalDelta: -900 };
+    expect(enforceRule9(f, 500).kcalDelta).toBe(-500);
+    expect(enforceRule9(f).kcalDelta).toBe(-250);
+  });
+});

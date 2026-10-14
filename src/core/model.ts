@@ -230,12 +230,30 @@ export interface RunPlanDay {
   note?: string;
 }
 
-export interface Settings extends Base {
-  /** fixed by the user's medical plan: shown, never changed by the app or coach */
-  proteinGPerKg: number;
-  sodiumCeilingMg: number | null;
+export type Goal = 'recomp' | 'lean-bulk' | 'cut';
+
+/** The parts of Settings that shape coaching, recipes and guardrails. */
+export interface Profile {
+  displayName?: string;
+  sex: 'male' | 'female' | 'other';
   heightCm: number;
   birthYear: number;
+  goal: Goal;
+  /** free text: what the person is training for */
+  goalText: string;
+  proteinGPerKg: number;
+  /** medical/fixed target: the coach must never suggest changing it */
+  proteinLocked: boolean;
+  /** medical low-sodium mode: no added salt, no salt substitutes, sodium watchlist */
+  lowSodium: boolean;
+  sodiumCeilingMg: number | null;
+  /** allergies, foods to avoid, other diet constraints */
+  dietNotes: string;
+}
+
+export interface Settings extends Base, Profile {
+  /** false until the person has filled in their profile */
+  profileDone: boolean;
   programStartDate: string | null;
   deloadEvery: number;
   recompWeeks: number;

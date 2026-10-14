@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_SETTINGS, SEED_EXERCISES } from '../../db/seed';
+import { DEFAULT_SETTINGS, ORIGINAL_PROFILE, SEED_EXERCISES } from '../../db/seed';
 import { addDays } from '../dates';
 import { buildWeek, type CoachData } from './weekly';
 
@@ -12,7 +12,7 @@ function data(): CoachData {
   );
   const body = Array.from({ length: 35 }, (_, i) => ({ id: `b${i}`, updatedAt: 0, date: addDays(REF, i - 34), weightKg: 68, source: 'manual' as const }));
   return {
-    settings: { ...DEFAULT_SETTINGS, programStartDate: '2026-09-14' },
+    settings: { ...DEFAULT_SETTINGS, ...ORIGINAL_PROFILE, programStartDate: '2026-09-14' },
     exercises: SEED_EXERCISES,
     sessions,
     sets,

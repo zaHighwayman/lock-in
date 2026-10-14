@@ -1,15 +1,18 @@
-// Lock-In sync + integrations Worker (Cloudflare Workers + D1).
-// - /sync/push, /sync/pull: last-write-wins record sync for the PWA
-// - /oauth/:provider/start|callback: Withings + Oura OAuth2 (client secrets live here, never in the app)
-// - /integrations/run + daily cron: pull weights, sleep and recovery into the record store
-// Every route except the OAuth callback requires `Authorization: Bearer <SYNC_TOKEN>`.
+// Lock-In server (Cloudflare Workers + D1).
+// - /auth/*: invite-only accounts with username + password, bearer sessions
+// - /admin/*: the admin (first account) creates invite codes and sees who has an account
+// - /sync/push, /sync/pull: last-write-wins record sync, partitioned per user
+// - /oauth/:provider/start|callback + daily cron: per-user Withings + Oura pulls
+// Every user only ever reads and writes rows with their own user_id.
 
 export interface Env {
   DB: D1Database;
+  /** one-time setup code for the first (admin) account */
   SYNC_TOKEN: string;
   TOKEN_KEY: string;
   ALLOWED_ORIGIN: string;
-  PUBLIC_URL: string;
+  /** optional override; defaults to the URL the Worker is reached at */
+  PUBLIC_URL?: string;
   WITHINGS_CLIENT_ID?: string;
   WITHINGS_CLIENT_SECRET?: string;
   OURA_CLIENT_ID?: string;
@@ -17,6 +20,12 @@ export interface Env {
 }
 
 type Provider = 'withings' | 'oura';
+
+interface User {
+  id: string;
+  username: string;
+  is_admin: number;
+}
 
 interface SyncRecord {
   table: string;
@@ -30,6 +39,19 @@ const ALLOWED_TABLES = new Set([
   'exercises', 'programDays', 'sessions', 'sets', 'runs', 'body', 'sleep', 'foods', 'foodLog',
   'savedMeals', 'recipes', 'recipeFeedback', 'batches', 'mealPlans', 'coachReports', 'chat', 'settings', 'aliases',
 ]);
+
+const DAY = 86_400_000;
+const SESSION_DAYS = 180;
+const INVITE_DAYS = 14;
+const MAX_FAILED = 10;
+const LOCK_MINUTES = 15;
+const PBKDF2_ITERATIONS = 100_000; // Workers' maximum
+
+class HttpError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+  }
+}
 
 // ---------------------------------------------------------------- helpers
 
@@ -45,8 +67,13 @@ function json(body: unknown, init: ResponseInit = {}, extra: Record<string, stri
   return new Response(JSON.stringify(body), { ...init, headers: { 'Content-Type': 'application/json', ...extra } });
 }
 
+const enc = new TextEncoder();
+
+async function sha256(s: string) {
+  return b64url(await crypto.subtle.digest('SHA-256', enc.encode(s)));
+}
+
 async function safeEqual(a: string, b: string): Promise<boolean> {
-  const enc = new TextEncoder();
   const [ha, hb] = await Promise.all([crypto.subtle.digest('SHA-256', enc.encode(a)), crypto.subtle.digest('SHA-256', enc.encode(b))]);
   const x = new Uint8Array(ha);
   const y = new Uint8Array(hb);
@@ -55,29 +82,32 @@ async function safeEqual(a: string, b: string): Promise<boolean> {
   return diff === 0 && a.length === b.length;
 }
 
-async function authorized(req: Request, env: Env): Promise<boolean> {
-  const h = req.headers.get('Authorization') ?? '';
-  const token = h.startsWith('Bearer ') ? h.slice(7) : '';
-  return !!env.SYNC_TOKEN && !!token && safeEqual(token, env.SYNC_TOKEN);
-}
-
 const b64url = (buf: ArrayBuffer | Uint8Array) =>
   btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const fromB64url = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+const randomToken = (bytes = 32) => b64url(crypto.getRandomValues(new Uint8Array(bytes)));
+
+function inviteCode() {
+  // readable, no 0/O/1/I
+  const abc = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const r = crypto.getRandomValues(new Uint8Array(10));
+  const s = Array.from(r, (b) => abc[b % abc.length]).join('');
+  return `${s.slice(0, 5)}-${s.slice(5)}`;
+}
 
 async function hmac(env: Env, data: string) {
-  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(env.TOKEN_KEY), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  return b64url(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(data)));
+  const key = await crypto.subtle.importKey('raw', enc.encode(env.TOKEN_KEY), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return b64url(await crypto.subtle.sign('HMAC', key, enc.encode(data)));
 }
 
 async function aesKey(env: Env) {
-  const raw = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`tokens:${env.TOKEN_KEY}`));
+  const raw = await crypto.subtle.digest('SHA-256', enc.encode(`tokens:${env.TOKEN_KEY}`));
   return crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
 }
 
 async function encrypt(env: Env, value: unknown): Promise<string> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await aesKey(env), new TextEncoder().encode(JSON.stringify(value)));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await aesKey(env), enc.encode(JSON.stringify(value)));
   return `${b64url(iv)}.${b64url(ct)}`;
 }
 
@@ -87,24 +117,187 @@ async function decrypt<T>(env: Env, s: string): Promise<T> {
   return JSON.parse(new TextDecoder().decode(pt)) as T;
 }
 
-/** Unix seconds or ISO string → local "YYYY-MM-DD" / "HH:MM" in Helsinki. */
 const helsinkiDate = (d: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Helsinki' }).format(d);
 const helsinkiTime = (d: Date) =>
   new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
 
+// ---------------------------------------------------------------- accounts
+
+async function hashPassword(password: string, salt: Uint8Array): Promise<string> {
+  const key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: PBKDF2_ITERATIONS }, key, 256);
+  return b64url(bits);
+}
+
+function validUsername(u: unknown): u is string {
+  return typeof u === 'string' && /^[a-z0-9_.-]{3,32}$/.test(u);
+}
+
+function validPassword(p: unknown): p is string {
+  return typeof p === 'string' && p.length >= 8 && p.length <= 200;
+}
+
+async function createSession(env: Env, userId: string) {
+  const token = randomToken();
+  const now = Date.now();
+  await env.DB.prepare('INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)')
+    .bind(await sha256(token), userId, now, now + SESSION_DAYS * DAY)
+    .run();
+  return token;
+}
+
+const publicUser = (u: User) => ({ id: u.id, username: u.username, isAdmin: !!u.is_admin });
+
+async function register(env: Env, body: { username?: unknown; password?: unknown; invite?: unknown }) {
+  const username = typeof body.username === 'string' ? body.username.trim().toLowerCase() : '';
+  if (!validUsername(username)) throw new HttpError(400, 'Username: 3–32 characters, a–z, 0–9, _ . -');
+  if (!validPassword(body.password)) throw new HttpError(400, 'Password: at least 8 characters');
+  const invite = typeof body.invite === 'string' ? body.invite.trim() : '';
+  const now = Date.now();
+
+  const count = (await env.DB.prepare('SELECT COUNT(*) AS n FROM users').first<{ n: number }>())?.n ?? 0;
+  const first = count === 0;
+  if (first) {
+    if (!invite || !(await safeEqual(invite, env.SYNC_TOKEN))) throw new HttpError(403, 'The first account needs the setup code (the SYNC_TOKEN secret).');
+  } else {
+    const inv = await env.DB.prepare('SELECT code, expires_at, used_by FROM invites WHERE code = ?').bind(invite.toUpperCase()).first<{ code: string; expires_at: number; used_by: string | null }>();
+    if (!inv || inv.used_by || inv.expires_at < now) throw new HttpError(403, 'Invite code is invalid, used or expired.');
+  }
+  if (await env.DB.prepare('SELECT 1 FROM users WHERE username = ?').bind(username).first()) throw new HttpError(409, 'That username is taken.');
+
+  const id = randomToken(12);
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const stmts = [
+    env.DB.prepare('INSERT INTO users (id, username, pass_hash, salt, is_admin, created_at, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(
+      id, username, await hashPassword(body.password as string, salt), b64url(salt), first ? 1 : 0, now, now,
+    ),
+  ];
+  if (first) {
+    // the admin inherits anything synced before accounts existed
+    stmts.push(env.DB.prepare("UPDATE records SET user_id = ? WHERE user_id = ''").bind(id));
+    stmts.push(env.DB.prepare("UPDATE tokens SET user_id = ? WHERE user_id = ''").bind(id));
+  } else {
+    stmts.push(env.DB.prepare('UPDATE invites SET used_by = ?, used_at = ? WHERE code = ?').bind(id, now, invite.toUpperCase()));
+  }
+  await env.DB.batch(stmts);
+  return { token: await createSession(env, id), user: publicUser({ id, username, is_admin: first ? 1 : 0 }) };
+}
+
+async function login(env: Env, body: { username?: unknown; password?: unknown }) {
+  const username = typeof body.username === 'string' ? body.username.trim().toLowerCase() : '';
+  const password = typeof body.password === 'string' ? body.password : '';
+  const row = await env.DB.prepare('SELECT id, username, pass_hash, salt, is_admin, failed_count, locked_until FROM users WHERE username = ?')
+    .bind(username)
+    .first<User & { pass_hash: string; salt: string; failed_count: number; locked_until: number | null }>();
+  const now = Date.now();
+  if (row?.locked_until && row.locked_until > now) throw new HttpError(429, `Too many wrong passwords. Try again in ${Math.ceil((row.locked_until - now) / 60000)} min.`);
+  // always hash, so a missing user takes as long as a wrong password
+  const hash = await hashPassword(password, row ? fromB64url(row.salt) : new Uint8Array(16));
+  if (!row || !(await safeEqual(hash, row.pass_hash))) {
+    if (row) {
+      const failed = row.failed_count + 1;
+      await env.DB.prepare('UPDATE users SET failed_count = ?, locked_until = ? WHERE id = ?')
+        .bind(failed >= MAX_FAILED ? 0 : failed, failed >= MAX_FAILED ? now + LOCK_MINUTES * 60000 : null, row.id)
+        .run();
+    }
+    throw new HttpError(401, 'Wrong username or password.');
+  }
+  await env.DB.prepare('UPDATE users SET failed_count = 0, locked_until = NULL, last_seen = ? WHERE id = ?').bind(now, row.id).run();
+  return { token: await createSession(env, row.id), user: publicUser(row) };
+}
+
+async function authenticate(req: Request, env: Env): Promise<User & { tokenHash: string }> {
+  const h = req.headers.get('Authorization') ?? '';
+  const token = h.startsWith('Bearer ') ? h.slice(7) : '';
+  if (!token) throw new HttpError(401, 'Not signed in.');
+  const tokenHash = await sha256(token);
+  const row = await env.DB.prepare(
+    'SELECT u.id, u.username, u.is_admin, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?',
+  )
+    .bind(tokenHash)
+    .first<User & { expires_at: number }>();
+  const now = Date.now();
+  if (!row || row.expires_at < now) throw new HttpError(401, 'Session expired. Sign in again.');
+  // sliding expiry, refreshed at most daily
+  if (row.expires_at - now < (SESSION_DAYS - 1) * DAY) {
+    await env.DB.batch([
+      env.DB.prepare('UPDATE sessions SET expires_at = ? WHERE token_hash = ?').bind(now + SESSION_DAYS * DAY, tokenHash),
+      env.DB.prepare('UPDATE users SET last_seen = ? WHERE id = ?').bind(now, row.id),
+    ]);
+  }
+  return { id: row.id, username: row.username, is_admin: row.is_admin, tokenHash };
+}
+
+async function checkPassword(env: Env, userId: string, password: unknown) {
+  const row = await env.DB.prepare('SELECT pass_hash, salt FROM users WHERE id = ?').bind(userId).first<{ pass_hash: string; salt: string }>();
+  return !!row && typeof password === 'string' && (await safeEqual(await hashPassword(password, fromB64url(row.salt)), row.pass_hash));
+}
+
+async function changePassword(env: Env, user: User & { tokenHash: string }, body: { oldPassword?: unknown; newPassword?: unknown }) {
+  if (!(await checkPassword(env, user.id, body.oldPassword))) throw new HttpError(401, 'Current password is wrong.');
+  if (!validPassword(body.newPassword)) throw new HttpError(400, 'New password: at least 8 characters');
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  await env.DB.batch([
+    env.DB.prepare('UPDATE users SET pass_hash = ?, salt = ? WHERE id = ?').bind(await hashPassword(body.newPassword, salt), b64url(salt), user.id),
+    // sign out every other device
+    env.DB.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?').bind(user.id, user.tokenHash),
+  ]);
+}
+
+async function deleteAccount(env: Env, user: User, body: { password?: unknown }) {
+  if (!(await checkPassword(env, user.id, body.password))) throw new HttpError(401, 'Password is wrong.');
+  if (user.is_admin) {
+    const others = (await env.DB.prepare('SELECT COUNT(*) AS n FROM users WHERE id != ?').bind(user.id).first<{ n: number }>())?.n ?? 0;
+    if (others > 0) throw new HttpError(400, 'The admin account can only be deleted after all other accounts are gone.');
+  }
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM records WHERE user_id = ?').bind(user.id),
+    env.DB.prepare('DELETE FROM tokens WHERE user_id = ?').bind(user.id),
+    env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(user.id),
+    env.DB.prepare('DELETE FROM invites WHERE created_by = ? AND used_by IS NULL').bind(user.id),
+    env.DB.prepare('DELETE FROM users WHERE id = ?').bind(user.id),
+  ]);
+}
+
+// ---------------------------------------------------------------- admin
+
+function requireAdmin(user: User) {
+  if (!user.is_admin) throw new HttpError(403, 'Admin only.');
+}
+
+async function adminOverview(env: Env) {
+  const users = await env.DB.prepare(
+    'SELECT u.username, u.is_admin, u.created_at, u.last_seen, (SELECT COUNT(*) FROM records r WHERE r.user_id = u.id AND r.deleted = 0) AS records FROM users u ORDER BY u.created_at',
+  ).all<{ username: string; is_admin: number; created_at: number; last_seen: number | null; records: number }>();
+  const invites = await env.DB.prepare(
+    'SELECT i.code, i.created_at, i.expires_at, i.used_at, u.username AS used_by FROM invites i LEFT JOIN users u ON u.id = i.used_by ORDER BY i.created_at DESC LIMIT 20',
+  ).all<{ code: string; created_at: number; expires_at: number; used_at: number | null; used_by: string | null }>();
+  return {
+    users: users.results.map((u) => ({ username: u.username, isAdmin: !!u.is_admin, createdAt: u.created_at, lastSeen: u.last_seen, records: u.records })),
+    invites: invites.results.map((i) => ({ code: i.code, createdAt: i.created_at, expiresAt: i.expires_at, usedBy: i.used_by, usedAt: i.used_at })),
+  };
+}
+
+async function createInvite(env: Env, user: User) {
+  const code = inviteCode();
+  const now = Date.now();
+  await env.DB.prepare('INSERT INTO invites (code, created_by, created_at, expires_at) VALUES (?, ?, ?, ?)').bind(code, user.id, now, now + INVITE_DAYS * DAY).run();
+  return { code, expiresAt: now + INVITE_DAYS * DAY };
+}
+
 // ---------------------------------------------------------------- sync
 
-async function upsert(env: Env, records: SyncRecord[]) {
+async function upsert(env: Env, userId: string, records: SyncRecord[]) {
   let written = 0;
   for (const r of records) {
     if (!ALLOWED_TABLES.has(r.table) || typeof r.id !== 'string' || typeof r.updatedAt !== 'number') continue;
-    const existing = await env.DB.prepare('SELECT updated_at FROM records WHERE tbl = ? AND id = ?').bind(r.table, r.id).first<{ updated_at: number }>();
+    const existing = await env.DB.prepare('SELECT updated_at FROM records WHERE user_id = ? AND tbl = ? AND id = ?').bind(userId, r.table, r.id).first<{ updated_at: number }>();
     if (existing && existing.updated_at >= r.updatedAt) continue;
-    // delete + insert so the row gets a fresh seq and other devices pull it
+    // delete + insert so the row gets a fresh seq and the user's other devices pull it
     await env.DB.batch([
-      env.DB.prepare('DELETE FROM records WHERE tbl = ? AND id = ?').bind(r.table, r.id),
-      env.DB.prepare('INSERT INTO records (tbl, id, updated_at, deleted, data) VALUES (?, ?, ?, ?, ?)').bind(
-        r.table, r.id, r.updatedAt, r.deleted ? 1 : 0, r.deleted ? null : JSON.stringify(r.data),
+      env.DB.prepare('DELETE FROM records WHERE user_id = ? AND tbl = ? AND id = ?').bind(userId, r.table, r.id),
+      env.DB.prepare('INSERT INTO records (user_id, tbl, id, updated_at, deleted, data) VALUES (?, ?, ?, ?, ?, ?)').bind(
+        userId, r.table, r.id, r.updatedAt, r.deleted ? 1 : 0, r.deleted ? null : JSON.stringify(r.data),
       ),
     ]);
     written++;
@@ -112,10 +305,10 @@ async function upsert(env: Env, records: SyncRecord[]) {
   return written;
 }
 
-async function pull(env: Env, since: number) {
+async function pull(env: Env, userId: string, since: number) {
   const LIMIT = 500;
-  const { results } = await env.DB.prepare('SELECT seq, tbl, id, updated_at, deleted, data FROM records WHERE seq > ? ORDER BY seq LIMIT ?')
-    .bind(since, LIMIT)
+  const { results } = await env.DB.prepare('SELECT seq, tbl, id, updated_at, deleted, data FROM records WHERE user_id = ? AND seq > ? ORDER BY seq LIMIT ?')
+    .bind(userId, since, LIMIT)
     .all<{ seq: number; tbl: string; id: string; updated_at: number; deleted: number; data: string | null }>();
   const records: SyncRecord[] = results.map((r) => ({ table: r.tbl, id: r.id, updatedAt: r.updated_at, deleted: !!r.deleted, data: r.data ? JSON.parse(r.data) : null }));
   return { records, cursor: results.length ? results[results.length - 1].seq : since, more: results.length === LIMIT };
@@ -130,34 +323,28 @@ interface Tokens {
 }
 
 const OAUTH = {
-  withings: {
-    authorize: 'https://account.withings.com/oauth2_user/authorize2',
-    scope: 'user.metrics',
-  },
-  oura: {
-    authorize: 'https://cloud.ouraring.com/oauth/authorize',
-    scope: 'daily heartrate personal',
-  },
+  withings: { authorize: 'https://account.withings.com/oauth2_user/authorize2', scope: 'user.metrics' },
+  oura: { authorize: 'https://cloud.ouraring.com/oauth/authorize', scope: 'daily heartrate personal' },
 } as const;
 
 function clientFor(env: Env, p: Provider) {
   const id = p === 'withings' ? env.WITHINGS_CLIENT_ID : env.OURA_CLIENT_ID;
   const secret = p === 'withings' ? env.WITHINGS_CLIENT_SECRET : env.OURA_CLIENT_SECRET;
-  if (!id || !secret) throw new Error(`${p} client id/secret not set on the Worker`);
+  if (!id || !secret) throw new HttpError(400, `${p} isn't set up on this server yet (client id/secret missing).`);
   return { id, secret };
 }
 
-const redirectUri = (env: Env, p: Provider) => `${env.PUBLIC_URL.replace(/\/$/, '')}/oauth/${p}/callback`;
+const redirectUri = (env: Env, origin: string, p: Provider) => `${(env.PUBLIC_URL || origin).replace(/\/$/, '')}/oauth/${p}/callback`;
 
-async function startOAuth(env: Env, p: Provider, returnTo: string) {
+async function startOAuth(env: Env, origin: string, userId: string, p: Provider, returnTo: string) {
   const { id } = clientFor(env, p);
-  const payload = b64url(new TextEncoder().encode(JSON.stringify({ p, r: returnTo, t: Date.now() })));
+  const payload = b64url(enc.encode(JSON.stringify({ p, u: userId, r: returnTo, t: Date.now() })));
   const state = `${payload}.${await hmac(env, payload)}`;
   const u = new URL(OAUTH[p].authorize);
   u.searchParams.set('response_type', 'code');
   u.searchParams.set('client_id', id);
   u.searchParams.set('scope', OAUTH[p].scope);
-  u.searchParams.set('redirect_uri', redirectUri(env, p));
+  u.searchParams.set('redirect_uri', redirectUri(env, origin, p));
   u.searchParams.set('state', state);
   return u.toString();
 }
@@ -182,20 +369,21 @@ async function tokenRequest(env: Env, p: Provider, params: Record<string, string
   return { access_token: j.access_token, refresh_token: j.refresh_token, expires_at: Date.now() + j.expires_in * 1000 };
 }
 
-async function saveTokens(env: Env, p: Provider, t: Tokens) {
-  await env.DB.prepare('INSERT INTO tokens (provider, data, updated_at) VALUES (?, ?, ?) ON CONFLICT(provider) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at')
-    .bind(p, await encrypt(env, t), Date.now())
+async function saveTokens(env: Env, userId: string, p: Provider, t: Tokens) {
+  await env.DB.prepare(
+    'INSERT INTO tokens (user_id, provider, data, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, provider) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at',
+  )
+    .bind(userId, p, await encrypt(env, t), Date.now())
     .run();
 }
 
-/** Valid access token, refreshing if it expires within 5 minutes. null = not connected. */
-async function accessToken(env: Env, p: Provider): Promise<string | null> {
-  const row = await env.DB.prepare('SELECT data FROM tokens WHERE provider = ?').bind(p).first<{ data: string }>();
+async function accessToken(env: Env, userId: string, p: Provider): Promise<string | null> {
+  const row = await env.DB.prepare('SELECT data FROM tokens WHERE user_id = ? AND provider = ?').bind(userId, p).first<{ data: string }>();
   if (!row) return null;
   let t = await decrypt<Tokens>(env, row.data);
   if (t.expires_at - Date.now() < 5 * 60_000) {
     t = await tokenRequest(env, p, { grant_type: 'refresh_token', refresh_token: t.refresh_token });
-    await saveTokens(env, p, t);
+    await saveTokens(env, userId, p, t);
   }
   return t.access_token;
 }
@@ -203,21 +391,22 @@ async function accessToken(env: Env, p: Provider): Promise<string | null> {
 async function oauthCallback(env: Env, p: Provider, url: URL): Promise<Response> {
   const [payload, sig] = (url.searchParams.get('state') ?? '').split('.');
   if (!payload || !sig || !(await safeEqual(sig, await hmac(env, payload)))) return new Response('Bad state', { status: 400 });
-  const st = JSON.parse(new TextDecoder().decode(fromB64url(payload))) as { p: Provider; r: string; t: number };
-  if (st.p !== p || Date.now() - st.t > 15 * 60_000) return new Response('Expired state, try connecting again', { status: 400 });
+  const st = JSON.parse(new TextDecoder().decode(fromB64url(payload))) as { p: Provider; u: string; r: string; t: number };
+  if (st.p !== p || Date.now() - st.t > 15 * 60_000) return new Response('Expired, try connecting again', { status: 400 });
+  if (!(await env.DB.prepare('SELECT 1 FROM users WHERE id = ?').bind(st.u).first())) return new Response('Account not found', { status: 400 });
   const code = url.searchParams.get('code');
   if (!code) return new Response(`Not connected: ${url.searchParams.get('error') ?? 'no code'}`, { status: 400 });
-  const tokens = await tokenRequest(env, p, { grant_type: 'authorization_code', code, redirect_uri: redirectUri(env, p) });
-  await saveTokens(env, p, tokens);
-  await (p === 'withings' ? syncWithings(env, 30) : syncOura(env, 30));
+  const tokens = await tokenRequest(env, p, { grant_type: 'authorization_code', code, redirect_uri: redirectUri(env, url.origin, p) });
+  await saveTokens(env, st.u, p, tokens);
+  await (p === 'withings' ? syncWithings(env, st.u, 30) : syncOura(env, st.u, 30));
   const back = st.r.startsWith(env.ALLOWED_ORIGIN) || /^http:\/\/localhost:\d+/.test(st.r) ? st.r : env.ALLOWED_ORIGIN;
   return Response.redirect(back, 302);
 }
 
 // ---------------------------------------------------------------- integrations
 
-async function syncWithings(env: Env, days: number): Promise<string> {
-  const token = await accessToken(env, 'withings');
+async function syncWithings(env: Env, userId: string, days: number): Promise<string> {
+  const token = await accessToken(env, userId, 'withings');
   if (!token) return 'not connected';
   const end = Math.floor(Date.now() / 1000);
   const res = await fetch('https://wbsapi.withings.net/measure', {
@@ -227,7 +416,6 @@ async function syncWithings(env: Env, days: number): Promise<string> {
   });
   const j = (await res.json()) as { status: number; body?: { measuregrps: { date: number; measures: { value: number; type: number; unit: number }[] }[] } };
   if (j.status !== 0 || !j.body) return `error ${j.status}`;
-  // one record per day: the latest weigh-in that day
   const byDay = new Map<string, { date: string; weightKg?: number; bodyFatPct?: number; ts: number }>();
   for (const g of j.body.measuregrps) {
     const date = helsinkiDate(new Date(g.date * 1000));
@@ -245,15 +433,15 @@ async function syncWithings(env: Env, days: number): Promise<string> {
   const records: SyncRecord[] = [...byDay.values()]
     .filter((r) => r.weightKg !== undefined)
     .map((r) => ({ table: 'body', id: `withings-${r.date}`, updatedAt: now, deleted: false, data: { id: `withings-${r.date}`, updatedAt: now, date: r.date, weightKg: r.weightKg, bodyFatPct: r.bodyFatPct, source: 'withings' } }));
-  await upsert(env, records);
+  await upsert(env, userId, records);
   return `${records.length} days`;
 }
 
-async function syncOura(env: Env, days: number): Promise<string> {
-  const token = await accessToken(env, 'oura');
+async function syncOura(env: Env, userId: string, days: number): Promise<string> {
+  const token = await accessToken(env, userId, 'oura');
   if (!token) return 'not connected';
-  const end = helsinkiDate(new Date(Date.now() + 86400_000));
-  const start = helsinkiDate(new Date(Date.now() - days * 86400_000));
+  const end = helsinkiDate(new Date(Date.now() + DAY));
+  const start = helsinkiDate(new Date(Date.now() - days * DAY));
   const get = async (path: string) => {
     const res = await fetch(`https://api.ouraring.com/v2/usercollection/${path}?start_date=${start}&end_date=${end}`, { headers: { Authorization: `Bearer ${token}` } });
     if (!res.ok) throw new Error(`Oura ${path} ${res.status}`);
@@ -261,7 +449,6 @@ async function syncOura(env: Env, days: number): Promise<string> {
   };
   const [sleeps, readiness] = await Promise.all([get('sleep'), get('daily_readiness')]);
   const ready = new Map(readiness.map((r) => [r.day as string, r.score as number]));
-  // main sleep per day: prefer type long_sleep, else the longest
   const best = new Map<string, Record<string, unknown>>();
   for (const s of sleeps) {
     const day = s.day as string;
@@ -286,15 +473,15 @@ async function syncOura(env: Env, days: number): Promise<string> {
     };
     return { table: 'sleep', id: data.id, updatedAt: now, deleted: false, data };
   });
-  await upsert(env, records);
+  await upsert(env, userId, records);
   return `${records.length} nights`;
 }
 
-async function runIntegrations(env: Env, days = 3) {
+async function runIntegrations(env: Env, userId: string, days = 3) {
   const out: Record<string, string> = {};
   for (const [name, fn] of [['withings', syncWithings], ['oura', syncOura]] as const) {
     try {
-      out[name] = await fn(env, days);
+      out[name] = await fn(env, userId, days);
     } catch (e) {
       out[name] = `error: ${e instanceof Error ? e.message : String(e)}`;
     }
@@ -303,6 +490,66 @@ async function runIntegrations(env: Env, days = 3) {
 }
 
 // ---------------------------------------------------------------- router
+
+async function body<T>(req: Request): Promise<T> {
+  try {
+    return (await req.json()) as T;
+  } catch {
+    throw new HttpError(400, 'Bad JSON');
+  }
+}
+
+async function route(req: Request, env: Env, url: URL): Promise<unknown> {
+  const { pathname } = url;
+  const post = req.method === 'POST';
+
+  if (pathname === '/auth/register' && post) return register(env, await body(req));
+  if (pathname === '/auth/login' && post) return login(env, await body(req));
+  if (pathname === '/auth/status' && req.method === 'GET') {
+    const n = (await env.DB.prepare('SELECT COUNT(*) AS n FROM users').first<{ n: number }>())?.n ?? 0;
+    return { needsSetup: n === 0 };
+  }
+
+  const user = await authenticate(req, env);
+  if (pathname === '/auth/me' && req.method === 'GET') return { user: publicUser(user) };
+  if (pathname === '/auth/logout' && post) {
+    await env.DB.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(user.tokenHash).run();
+    return { ok: true };
+  }
+  if (pathname === '/auth/password' && post) {
+    await changePassword(env, user, await body(req));
+    return { ok: true };
+  }
+  if (pathname === '/auth/delete' && post) {
+    await deleteAccount(env, user, await body(req));
+    return { ok: true };
+  }
+
+  if (pathname === '/admin/overview' && req.method === 'GET') {
+    requireAdmin(user);
+    return adminOverview(env);
+  }
+  if (pathname === '/admin/invites' && post) {
+    requireAdmin(user);
+    return createInvite(env, user);
+  }
+
+  if (pathname === '/sync/push' && post) {
+    const b = await body<{ records?: SyncRecord[] }>(req);
+    if (!Array.isArray(b.records) || b.records.length > 1000) throw new HttpError(400, 'bad request');
+    return { written: await upsert(env, user.id, b.records) };
+  }
+  if (pathname === '/sync/pull' && req.method === 'GET') return pull(env, user.id, Number(url.searchParams.get('since') ?? 0) || 0);
+
+  const start = pathname.match(/^\/oauth\/(withings|oura)\/start$/);
+  if (start && post) {
+    const { returnTo } = await body<{ returnTo?: string }>(req);
+    return { url: await startOAuth(env, url.origin, user.id, start[1] as Provider, returnTo ?? env.ALLOWED_ORIGIN) };
+  }
+  if (pathname === '/integrations/run' && post) return runIntegrations(env, user.id, 7);
+
+  throw new HttpError(404, 'not found');
+}
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -319,32 +566,16 @@ export default {
       }
     }
 
-    if (!(await authorized(req, env))) return json({ error: 'unauthorized' }, { status: 401 }, h);
-
     try {
-      if (url.pathname === '/sync/push' && req.method === 'POST') {
-        const body = (await req.json()) as { records?: SyncRecord[] };
-        if (!Array.isArray(body.records) || body.records.length > 1000) return json({ error: 'bad request' }, { status: 400 }, h);
-        return json({ written: await upsert(env, body.records) }, {}, h);
-      }
-      if (url.pathname === '/sync/pull' && req.method === 'GET') {
-        return json(await pull(env, Number(url.searchParams.get('since') ?? 0) || 0), {}, h);
-      }
-      const start = url.pathname.match(/^\/oauth\/(withings|oura)\/start$/);
-      if (start && req.method === 'POST') {
-        const { returnTo } = (await req.json()) as { returnTo?: string };
-        return json({ url: await startOAuth(env, start[1] as Provider, returnTo ?? env.ALLOWED_ORIGIN) }, {}, h);
-      }
-      if (url.pathname === '/integrations/run' && req.method === 'POST') {
-        return json(await runIntegrations(env, 7), {}, h);
-      }
-      return json({ error: 'not found' }, { status: 404 }, h);
+      return json(await route(req, env, url), {}, h);
     } catch (e) {
+      if (e instanceof HttpError) return json({ error: e.message }, { status: e.status }, h);
       return json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 }, h);
     }
   },
 
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil(runIntegrations(env, 3));
+    const { results } = await env.DB.prepare("SELECT DISTINCT user_id FROM tokens WHERE user_id != ''").all<{ user_id: string }>();
+    ctx.waitUntil(Promise.all(results.map((r) => runIntegrations(env, r.user_id, 3))));
   },
 } satisfies ExportedHandler<Env>;

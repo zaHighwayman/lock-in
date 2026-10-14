@@ -80,7 +80,7 @@ function DayLog() {
             {totals.sodiumMg} mg{settings.sodiumCeilingMg ? ` / ${settings.sodiumCeilingMg}` : ''}
           </span>
         </div>
-        {!settings.sodiumCeilingMg && <p className="mt-1 text-xs text-faint">Set your sodium ceiling in Settings to track it against your limit.</p>}
+        {settings.lowSodium && !settings.sodiumCeilingMg && <p className="mt-1 text-xs text-faint">Set your sodium ceiling in your profile to track it against your limit.</p>}
         <div className="mt-3">
           <FlagList flags={dayFlags(totals, pTarget, settings.sodiumCeilingMg)} />
         </div>
@@ -258,7 +258,7 @@ export function GenerateSheet({ onClose, base }: { onClose: () => void; base?: R
 
   // ~35 % of daily protein in the dinner portion
   const proteinPer = Math.round(proteinTarget(bw, settings.proteinGPerKg) * 0.35);
-  const sodiumPer = settings.sodiumCeilingMg ? Math.round(settings.sodiumCeilingMg * 0.3) : null;
+  const sodiumPer = settings.lowSodium && settings.sodiumCeilingMg ? Math.round(settings.sodiumCeilingMg * 0.3) : null;
 
   async function run() {
     setBusy(true);
@@ -273,6 +273,7 @@ export function GenerateSheet({ onClose, base }: { onClose: () => void; base?: R
         sodiumPerPortionMaxMg: sodiumPer,
         tasteProfile: tasteProfile(recipes, feedback, settings.foodPreferences),
         pantry,
+        profile: settings,
         base,
       });
       setResult(r);
@@ -315,7 +316,7 @@ export function GenerateSheet({ onClose, base }: { onClose: () => void; base?: R
             <NumInput value={servings} onChange={setServings} />
           </Field>
           <p className="mb-3 text-xs text-faint">
-            Targets ~{proteinPer} g protein per portion{sodiumPer ? `, under ${sodiumPer} mg sodium` : ', low sodium'}, no added salt. Learns from your likes, dislikes and edits.
+            Targets ~{proteinPer} g protein per portion{settings.lowSodium ? (sodiumPer ? `, under ${sodiumPer} mg sodium, no added salt` : ', low sodium, no added salt') : ''}{settings.dietNotes ? `, respecting: ${settings.dietNotes}` : ''}. Learns from your likes, dislikes and edits.
           </p>
           <ErrorNote error={error} />
           <Button variant="primary" className="w-full" disabled={busy} onClick={run}>

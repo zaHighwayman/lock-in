@@ -1,6 +1,6 @@
 # Lock-In
 
-Personal training log + coach. Workouts with automatic progression, runs, body metrics, sleep/recovery, food logging with photo estimates, AI-generated low-sodium recipes that learn from your feedback, meal prep with shopping lists and freezer inventory, and a weekly coach report.
+Training log + coach for you and the people you invite. Workouts with automatic progression, runs, body metrics, sleep/recovery, food logging with photo estimates, AI-generated low-sodium recipes that learn from your feedback, meal prep with shopping lists and freezer inventory, and a weekly coach report.
 
 - **Installable app** (PWA) hosted on GitHub Pages. Works offline; data lives on your phone (IndexedDB).
 - **Coaching rules are plain code** (`src/core/rules`, 17 rules, unit-tested). The AI only writes summaries, answers questions, reads food labels and writes recipes.
@@ -30,31 +30,40 @@ Ingredient values in the seed table are approximate. Check the ones you use agai
 
 **Backups:** until you set up sync, the phone holds the only copy. Settings → *Export full backup* once a week (the Today screen reminds you).
 
-## 3. Optional: sync + Withings + Oura (Cloudflare Worker, free tier)
+## 3. Accounts, sync, Withings + Oura (Cloudflare Worker, free tier)
+
+The server in `worker/` adds **accounts**: each person signs in with a username and password, their data syncs between their own devices, and nobody else can see it. Sign-up is **invite-only**.
+
+First-time server setup:
 
 ```bash
 cd worker
 npm install
 npx wrangler login
 npx wrangler d1 create lock-in        # copy the database_id into wrangler.toml
-npm run db:init
-```
-
-Edit `worker/wrangler.toml`: replace `<you>` in `ALLOWED_ORIGIN` and `PUBLIC_URL`. Then set secrets (each command asks for the value):
-
-```bash
-npx wrangler secret put SYNC_TOKEN       # long random string, e.g. from: openssl rand -hex 32
-npx wrangler secret put TOKEN_KEY        # another long random string
+npm run db:migrate
+npx wrangler secret put SYNC_TOKEN    # long random string (openssl rand -hex 32): setup code for the first account
+npx wrangler secret put TOKEN_KEY     # another long random string: encrypts Withings/Oura logins
 npm run deploy
 ```
 
-In the app: Settings → Sync → paste the Worker URL and the same `SYNC_TOKEN`. Do this on the phone and the PC.
+If your GitHub username isn't `zaHighwayman`, change `ALLOWED_ORIGIN` in `worker/wrangler.toml` first.
 
-**Withings:** create an app at <https://developer.withings.com/> with callback URL `https://lock-in-api.<you>.workers.dev/oauth/withings/callback`, then `npx wrangler secret put WITHINGS_CLIENT_ID` and `WITHINGS_CLIENT_SECRET`.
+**Updating the server** after code changes: `npm run db:migrate` (only does anything when there's a new migration), then `npm run deploy`.
 
-**Oura:** create an app at <https://cloud.ouraring.com/oauth/applications> with redirect URI `https://lock-in-api.<you>.workers.dev/oauth/oura/callback`, then set `OURA_CLIENT_ID` and `OURA_CLIENT_SECRET`.
+**First account (admin):** in the app, Settings → Account → *Sign in or create account*. Enter the server address; the app sees the server has no accounts yet and asks for the setup code (your `SYNC_TOKEN`). Tick *Move the data on this device into this account* so your existing logs come along.
 
-Then tap **Connect Withings** / **Connect Oura** in Settings. The first connect backfills 30 days; after that a cron pulls daily. Both providers change their APIs from time to time. If a sync errors, the message is shown in Settings and everything can still be entered by hand.
+**Inviting someone:** Settings → *Users (admin)* → *Create invite code* → *Copy invite message* and send it. Codes are single-use and expire after 14 days. The new person opens the app link, taps *I already have an account*, switches to *Create account*, and fills in the server address and code. Each person sets up their own profile (goal, protein target, optional low-sodium mode, diet notes) and adds their own free Gemini key.
+
+To skip typing the server address on every device, add a repo variable `SERVER_URL` (GitHub → Settings → Secrets and variables → Actions → Variables) with the Worker URL. The next deploy pre-fills it.
+
+**Privacy:** other users never see each other's data, in the app or on a shared device (each account has its own database on the device). Whoever owns the Cloudflare account can technically read the server database. Sign out with *remove data from this device* on shared computers.
+
+**Withings:** create an app at <https://developer.withings.com/> with callback URL `https://lock-in-api.<your-subdomain>.workers.dev/oauth/withings/callback`, then `npx wrangler secret put WITHINGS_CLIENT_ID` and `WITHINGS_CLIENT_SECRET`.
+
+**Oura:** create an app at <https://cloud.ouraring.com/oauth/applications> with redirect URI `https://lock-in-api.<your-subdomain>.workers.dev/oauth/oura/callback`, then set `OURA_CLIENT_ID` and `OURA_CLIENT_SECRET`.
+
+Each person then taps **Connect Withings** / **Connect Oura** in their own Settings. The first connect backfills 30 days; after that a cron pulls daily for everyone who connected. If a sync errors, the message shows in Settings and everything can still be entered by hand.
 
 ## 4. Ollama (optional, PC only)
 

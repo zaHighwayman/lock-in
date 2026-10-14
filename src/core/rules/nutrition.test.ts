@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkText, forbiddenIngredient } from './guardrails';
+import { checkText, constraintsText, forbiddenIngredient, STRICT_PROFILE, type GuardProfile } from './guardrails';
 import { dayFlags, perPortion, proteinTarget, watchlistHits } from './nutrition';
 
 const n = (kcal: number, protein: number, carbs: number, fat: number, sodiumMg: number) => ({ kcal, protein, carbs, fat, sodiumMg });
@@ -70,5 +70,38 @@ describe('guardrails', () => {
   });
   it('passes normal coaching text', () => {
     expect(checkText('Bench went up 2.5 kg, sleep averaged 8 h 10 min. Keep the dinner carb portion as is.')).toEqual([]);
+  });
+});
+
+describe('guardrails follow the profile', () => {
+  const relaxed: GuardProfile = { lowSodium: false, proteinLocked: false, proteinGPerKg: 1.8, goal: 'cut', dietNotes: 'vegetarian', birthYear: 2000 };
+  it('salt is fine without low-sodium mode', () => {
+    expect(checkText('Season with salt and pepper.', relaxed)).toEqual([]);
+    expect(forbiddenIngredient('Salt', false)).toBeNull();
+  });
+  it('protein numbers are only policed when the target is locked', () => {
+    expect(checkText('Go up to 2 g/kg protein', relaxed)).toEqual([]);
+    expect(checkText('Aim for 1.8 g/kg', { ...relaxed, proteinLocked: true })).toEqual([]);
+    expect(checkText('Aim for 2.2 g/kg', { ...relaxed, proteinLocked: true })).toHaveLength(1);
+  });
+  it('a cut allows up to 500 kcal deficit', () => {
+    expect(checkText('Run a 400 kcal deficit', relaxed)).toEqual([]);
+    expect(checkText('Run a 700 kcal deficit', relaxed)).toHaveLength(1);
+    expect(checkText('Run a 400 kcal deficit', STRICT_PROFILE)).toHaveLength(1);
+  });
+  it('skipped meals and supplements are flagged for everyone', () => {
+    expect(checkText('skip breakfast', relaxed)).toHaveLength(1);
+    expect(checkText('take creatine', relaxed)).toHaveLength(1);
+  });
+  it('builds constraint text from the profile', () => {
+    const strict = constraintsText(STRICT_PROFILE);
+    expect(strict).toContain('low-sodium');
+    expect(strict).toContain('fixed at 1.5 g');
+    expect(strict).toContain('under 18');
+    const other = constraintsText(relaxed);
+    expect(other).not.toContain('low-sodium');
+    expect(other).toContain('1.8 g per kg');
+    expect(other).toContain('500 kcal');
+    expect(other).toContain('vegetarian');
   });
 });

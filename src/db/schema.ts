@@ -1,5 +1,6 @@
 // IndexedDB via Dexie. The device copy is the source of truth; sync (if configured) runs in the background.
 import Dexie, { type Table } from 'dexie';
+import { currentAccount, dbNameFor } from './account';
 import type {
   BodyMetric, ChatMessage, CoachReport, Exercise, Food, FoodLogEntry, MealPlan, MealPrepBatch, ProgramDay,
   Recipe, RecipeFeedback, Run, SavedMeal, SetLog, Settings, SleepRecovery, WorkoutSession,
@@ -52,8 +53,8 @@ export class LockInDB extends Dexie {
   photos!: Table<Photo, string>;
   meta!: Table<Meta, string>;
 
-  constructor() {
-    super('lock-in');
+  constructor(name: string) {
+    super(name);
     this.version(1).stores({
       exercises: 'id, name, updatedAt',
       programDays: 'id, weekday, updatedAt',
@@ -80,7 +81,8 @@ export class LockInDB extends Dexie {
   }
 }
 
-export const db = new LockInDB();
+/** The database of the signed-in account (or the this-device-only one). Switching accounts reloads the app. */
+export const db = new LockInDB(dbNameFor(currentAccount()));
 
 /** Tables that sync to the Worker. Photos and meta (incl. API keys) stay on the device. */
 export const SYNCED_TABLES = [

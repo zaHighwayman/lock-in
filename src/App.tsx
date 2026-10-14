@@ -1,4 +1,6 @@
-import { HashRouter, NavLink, Route, Routes, useLocation } from 'react-router-dom';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { HashRouter, Navigate, NavLink, Route, Routes, useLocation } from 'react-router-dom';
+import { db } from './db/schema';
 import { cx } from './ui/kit';
 import TodayPage from './pages/Today';
 import TrainPage from './pages/Train';
@@ -11,6 +13,8 @@ import ProgressPage from './pages/Progress';
 import CoachPage from './pages/Coach';
 import SettingsPage from './pages/Settings';
 import ImportPage from './pages/Import';
+import LoginPage from './pages/Login';
+import ProfilePage from './pages/Profile';
 
 const TABS = [
   { to: '/', label: 'Today', icon: 'M4 12h16M12 4v16' },
@@ -20,9 +24,17 @@ const TABS = [
   { to: '/coach', label: 'Coach', icon: 'M4 5h16v10H9l-5 4z' },
 ];
 
+/** New people fill in their profile before anything else. */
+function ProfileGate() {
+  const loc = useLocation();
+  const settings = useLiveQuery(() => db.settings.get('settings'), []);
+  if (settings && !settings.profileDone && !['/profile', '/login'].includes(loc.pathname)) return <Navigate to="/profile" replace />;
+  return null;
+}
+
 function TabBar() {
   const loc = useLocation();
-  if (loc.pathname.startsWith('/workout/')) return null;
+  if (loc.pathname.startsWith('/workout/') || loc.pathname === '/login') return null;
   return (
     <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-line bg-bg/95 backdrop-blur safe-bottom">
       <div className="mx-auto flex max-w-xl">
@@ -47,6 +59,7 @@ function TabBar() {
 export default function App() {
   return (
     <HashRouter>
+      <ProfileGate />
       <Routes>
         <Route path="/" element={<TodayPage />} />
         <Route path="/train" element={<TrainPage />} />
@@ -59,6 +72,8 @@ export default function App() {
         <Route path="/coach" element={<CoachPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/import" element={<ImportPage />} />
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/profile" element={<ProfilePage />} />
       </Routes>
       <TabBar />
     </HashRouter>

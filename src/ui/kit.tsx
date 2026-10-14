@@ -1,5 +1,5 @@
 // Small shared components. Big tap targets: this is used between sets with sweaty hands.
-import { useEffect, useState, type ButtonHTMLAttributes, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import type { Flag } from '../core/model';
 
 export function cx(...c: (string | false | null | undefined)[]) {
@@ -81,6 +81,39 @@ export function Field({ label, hint, children }: { label: string; hint?: string;
       {hint && <span className="mt-1 block text-xs text-faint">{hint}</span>}
     </label>
   );
+}
+
+/**
+ * Text field for values stored in the database. Keeps its own state while typing and saves shortly after,
+ * so slow storage round-trips never swallow keystrokes.
+ */
+export function LiveText({ value: raw, onCommit, multiline, className, ...rest }: { value: string | undefined; onCommit: (v: string) => void; multiline?: boolean; className?: string; placeholder?: string; type?: string }) {
+  const value = raw ?? '';
+  const [v, setV] = useState(value);
+  const focused = useRef(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const latest = useRef(value);
+  useEffect(() => {
+    if (!focused.current) setV(value);
+  }, [value]);
+  const change = (x: string) => {
+    setV(x);
+    latest.current = x;
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => onCommit(x), 400);
+  };
+  const common = {
+    className: cx(inputCls, className),
+    value: v,
+    onFocus: () => (focused.current = true),
+    onBlur: () => {
+      focused.current = false;
+      clearTimeout(timer.current);
+      if (latest.current !== value) onCommit(latest.current);
+    },
+    ...rest,
+  };
+  return multiline ? <textarea {...common} onChange={(e) => change(e.target.value)} /> : <input {...common} onChange={(e) => change(e.target.value)} />;
 }
 
 export const inputCls = 'w-full rounded-xl border border-line bg-surface-2 px-3 py-2.5 text-ink placeholder:text-faint outline-none focus:border-accent/60';
