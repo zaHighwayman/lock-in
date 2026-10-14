@@ -1,0 +1,11 @@
+node_modules
+dist
+.env*
+!.env.example
+worker/.wrangler
+worker/node_modules
+worker/.dev.vars
+.DS_Store
+*.local
+worker/wrangler.dev.toml
+.claude/

@@ -1,0 +1,306 @@
+import { useLiveQuery } from 'dexie-react-hooks';
+import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { useSettings } from '../app/hooks';
+import { exerciseHistories } from '../core/coach/weekly';
+import { addDays, shortDate, today } from '../core/dates';
+import { avg7Series, evaluateBodyComp } from '../core/rules/bodycomp';
+import { detectStall, liftTrend, sessionScore } from '../core/rules/lifting';
+import { baseline, recoveryFlag, sleepCheck } from '../core/rules/recovery';
+import { remove, save, uid } from '../db/repo';
+import { db } from '../db/schema';
+import { TimeChart } from '../ui/Chart';
+import { Button, Card, Empty, Field, FlagList, NumInput, Page, Segmented, Stat, cx, inputCls } from '../ui/kit';
+
+type Tab = 'body' | 'lifts' | 'recovery';
+type Range = 30 | 90 | 365;
+
+export default function ProgressPage() {
+  const [params, setParams] = useSearchParams();
+  const tab = (params.get('tab') as Tab) || 'body';
+  const [range, setRange] = useState<Range>(90);
+  return (
+    <Page title="Progress">
+      <Segmented className="mb-2" value={tab} onChange={(t) => setParams({ tab: t }, { replace: true })} options={[{ value: 'body', label: 'Body' }, { value: 'lifts', label: 'Lifts' }, { value: 'recovery', label: 'Recovery' }]} />
+      <Segmented
+        className="mb-3"
+        value={String(range) as '30' | '90' | '365'}
+        onChange={(v) => setRange(Number(v) as Range)}
+        options={[{ value: '30', label: '30 d' }, { value: '90', label: '90 d' }, { value: '365', label: '1 y' }]}
+      />
+      {tab === 'body' && <Body range={range} />}
+      {tab === 'lifts' && <Lifts range={range} />}
+      {tab === 'recovery' && <Recovery range={range} />}
+    </Page>
+  );
+}
+
+function Body({ range }: { range: Range }) {
+  const from = addDays(today(), -range);
+  const rows = useLiveQuery(() => db.body.where('date').aboveOrEqual(addDays(from, -35)).toArray(), [from]) ?? [];
+  const sessions = useLiveQuery(() => db.sessions.toArray(), []) ?? [];
+  const sets = useLiveQuery(() => db.sets.toArray(), []) ?? [];
+  const [kg, setKg] = useState<number | null>(null);
+  const [waist, setWaist] = useState<number | null>(null);
+  const [date, setDate] = useState(today());
+
+  const weights = rows.filter((r) => r.weightKg !== undefined).map((r) => ({ date: r.date, value: r.weightKg! }));
+  const waists = rows.filter((r) => r.waistCm !== undefined).map((r) => ({ date: r.date, value: r.waistCm! }));
+  const fat = rows.filter((r) => r.bodyFatPct !== undefined).map((r) => ({ date: r.date, value: r.bodyFatPct! }));
+  const avg = avg7Series(weights).filter((p) => p.date >= from);
+  const trend = liftTrend([...exerciseHistories(sessions, sets).values()], today());
+  const bc = evaluateBodyComp({ weights, waists, liftTrend: trend, refDate: today() });
+
+  return (
+    <>
+      <Card title="Weight">
+        <div className="mb-3 grid grid-cols-3 gap-3">
+          <Stat label="7-day avg" value={bc.avgNow ? `${bc.avgNow.toFixed(1)} kg` : '–'} />
+          <Stat label="2 weeks" value={bc.change2w === null ? '–' : `${bc.change2w > 0 ? '+' : ''}${bc.change2w.toFixed(1)}`} />
+          <Stat label="4 weeks" value={bc.change4w === null ? '–' : `${bc.change4w > 0 ? '+' : ''}${bc.change4w.toFixed(1)}`} />
+        </div>
+        <TimeChart
+          series={[
+            { name: 'Daily', kind: 'dots', tone: 'muted', data: weights.filter((w) => w.date >= from) },
+            { name: '7-day avg', kind: 'line', data: avg },
+          ]}
+          format={(v) => v.toFixed(1)}
+        />
+      </Card>
+      <Card title="Waist">
+        <TimeChart series={[{ name: 'Waist cm', kind: 'line', data: waists.filter((w) => w.date >= from) }]} format={(v) => v.toFixed(1)} empty="Log your waist weekly." />
+      </Card>
+      <Card title="Weekly check">
+        <FlagList flags={bc.flags} empty="Nothing to change." />
+      </Card>
+      <Card title="Log">
+        <Field label="Date">
+          <input type="date" className={inputCls} value={date} max={today()} onChange={(e) => setDate(e.target.value)} />
+        </Field>
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Weight (kg)">
+            <NumInput value={kg} onChange={setKg} />
+          </Field>
+          <Field label="Waist (cm)">
+            <NumInput value={waist} onChange={setWaist} />
+          </Field>
+        </div>
+        <Button
+          variant="primary"
+          className="w-full"
+          disabled={!kg && !waist}
+          onClick={async () => {
+            if (kg) await save('body', { id: `w-${date}`, date, weightKg: kg, source: 'manual' });
+            if (waist) await save('body', { id: uid(), date, waistCm: waist, source: 'manual' });
+            setKg(null);
+            setWaist(null);
+          }}
+        >
+          Save
+        </Button>
+      </Card>
+      {fat.length > 0 && (
+        <Card title="Body fat % (Withings)">
+          <p className="mb-2 text-xs text-warn">Unreliable day to day. Only look at the long-term trend.</p>
+          <TimeChart series={[{ name: 'Body fat %', kind: 'line', data: avg7Series(fat).filter((p) => p.date >= from) }]} format={(v) => v.toFixed(1)} />
+        </Card>
+      )}
+      <Photos />
+    </>
+  );
+}
+
+function Photos() {
+  const photos = useLiveQuery(() => db.photos.orderBy('date').reverse().toArray(), []) ?? [];
+  const settings = useSettings();
+  const urls = useMemo(() => photos.map((p) => ({ id: p.id, date: p.date, url: URL.createObjectURL(p.blob) })), [photos]);
+  useEffect(() => () => urls.forEach((u) => URL.revokeObjectURL(u.url)), [urls]);
+  return (
+    <Card title="Progress photos">
+      <p className="mb-2 text-xs text-faint">Stored only on this device. Never synced or sent anywhere. Every 4 weeks: front, side, back.</p>
+      <label className="mb-3 block">
+        <span className="inline-flex cursor-pointer items-center rounded-xl border border-line bg-surface-2 px-4 py-2.5 font-medium">+ Add photos</span>
+        <input
+          type="file"
+          accept="image/*"
+          multiple
+          className="hidden"
+          onChange={async (e) => {
+            const files = [...(e.target.files ?? [])];
+            for (const f of files) await db.photos.put({ id: uid(), date: today(), blob: f });
+            if (files.length) await save('settings', { ...settings, lastPhotoAt: today() });
+          }}
+        />
+      </label>
+      {urls.length === 0 ? (
+        <Empty>No photos yet.</Empty>
+      ) : (
+        <div className="grid grid-cols-3 gap-2">
+          {urls.map((u) => (
+            <figure key={u.id} className="relative">
+              <img src={u.url} className="aspect-[3/4] w-full rounded-lg object-cover" alt={`Progress ${u.date}`} />
+              <figcaption className="mt-0.5 flex justify-between text-[11px] text-muted">
+                {shortDate(u.date)}
+                <button onClick={() => confirm('Delete photo?') && db.photos.delete(u.id)}>✕</button>
+              </figcaption>
+            </figure>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function Lifts({ range }: { range: Range }) {
+  const exercises = useLiveQuery(() => db.exercises.orderBy('name').toArray(), []) ?? [];
+  const sessions = useLiveQuery(() => db.sessions.toArray(), []) ?? [];
+  const sets = useLiveQuery(() => db.sets.toArray(), []) ?? [];
+  const hist = useMemo(() => exerciseHistories(sessions, sets), [sessions, sets]);
+  const trained = exercises.filter((e) => hist.has(e.id));
+  const [pick, setPick] = useState<string>('');
+  const id = pick || trained[0]?.id || '';
+  const h = hist.get(id) ?? [];
+  const from = addDays(today(), -range);
+  const ex = exercises.find((e) => e.id === id);
+  const stalled = trained.filter((e) => detectStall(hist.get(e.id) ?? []));
+
+  if (trained.length === 0) return <Empty>Log a workout to see lift progress.</Empty>;
+  const bodyweight = ex?.loadType === 'bodyweight' && h.every((s) => s.sets.every((x) => x.weight === 0));
+  return (
+    <>
+      <Card>
+        <select className={cx(inputCls, 'mb-3')} value={id} onChange={(e) => setPick(e.target.value)}>
+          {trained.map((e) => (
+            <option key={e.id} value={e.id}>
+              {e.name}
+            </option>
+          ))}
+        </select>
+        <TimeChart
+          series={[{ name: bodyweight ? 'Best set reps' : 'Est. 1RM', kind: 'line', data: h.filter((s) => s.date >= from && !s.isDeload).map((s) => ({ date: s.date, value: sessionScore(s) })) }]}
+          format={(v) => (bodyweight ? String(Math.round(v)) : v.toFixed(1))}
+        />
+        <p className="mt-1 text-xs text-faint">{bodyweight ? 'Most reps in one set.' : 'Estimated 1-rep max from your best set (Epley). Useful for the trend, not as a max to test.'}</p>
+      </Card>
+      <Card title="Sessions">
+        <ul className="divide-y divide-line text-sm">
+          {[...h].reverse().slice(0, 15).map((s, i) => (
+            <li key={i} className="flex justify-between py-2">
+              <span className="text-muted">
+                {shortDate(s.date)} {s.isDeload && <span className="text-info">deload</span>}
+              </span>
+              <span className="tnum">{s.sets.map((x) => `${x.weight || 'BW'}×${x.reps}`).join('  ')}</span>
+            </li>
+          ))}
+        </ul>
+      </Card>
+      {stalled.length > 0 && (
+        <Card title="Stalled">
+          <FlagList flags={stalled.map((e) => ({ rule: 2, area: 'lifting', level: 'warn', title: e.name, detail: 'No progress in 3 sessions: check sleep & food → hold → swap variation.' }))} />
+        </Card>
+      )}
+    </>
+  );
+}
+
+function Recovery({ range }: { range: Range }) {
+  const from = addDays(today(), -range);
+  const rows = useLiveQuery(() => db.sleep.where('date').aboveOrEqual(addDays(from, -15)).toArray(), [from]) ?? [];
+  const sorted = [...rows].sort((a, b) => a.date.localeCompare(b.date));
+  const shown = sorted.filter((r) => r.date >= from);
+  const hrB = baseline(sorted, addDays(today(), 1), 'restingHr');
+  const hrvB = baseline(sorted, addDays(today(), 1), 'hrv');
+  const sleep = sleepCheck(sorted, today());
+  const rec = recoveryFlag(sorted, today());
+  const flags = [...(rec ? [rec] : []), ...sleep.flags];
+
+  return (
+    <>
+      <Card title="This week">
+        <div className="mb-3 grid grid-cols-3 gap-3">
+          <Stat label="Avg sleep" value={sleep.avgSleep ? `${Math.floor(sleep.avgSleep / 60)} h ${Math.round(sleep.avgSleep % 60)}` : '–'} tone={sleep.avgSleep && sleep.avgSleep < 480 ? 'warn' : undefined} />
+          <Stat label="RHR base" value={hrB ? Math.round(hrB.mean) : '–'} sub="14 d" />
+          <Stat label="HRV base" value={hrvB ? Math.round(hrvB.mean) : '–'} sub="14 d" />
+        </div>
+        <FlagList flags={flags} empty={rows.length ? 'Recovery looks fine.' : 'Connect Oura in Settings or log manually below.'} />
+      </Card>
+      <Card title="Sleep (h)">
+        <TimeChart series={[{ name: 'Sleep h', kind: 'bars', data: shown.filter((r) => r.sleepMin).map((r) => ({ date: r.date, value: r.sleepMin! / 60 })) }]} target={{ value: 8, label: '8 h' }} zero format={(v) => v.toFixed(1)} />
+      </Card>
+      <Card title="Resting HR (bpm)">
+        <TimeChart
+          series={[{ name: 'RHR', kind: 'line', data: shown.filter((r) => r.restingHr).map((r) => ({ date: r.date, value: r.restingHr! })) }]}
+          band={hrB ? { lo: hrB.mean - Math.max(hrB.sd, 2), hi: hrB.mean + Math.max(hrB.sd, 2), label: 'Your normal range' } : undefined}
+          format={(v) => String(Math.round(v))}
+        />
+      </Card>
+      <Card title="HRV (ms)">
+        <TimeChart
+          series={[{ name: 'HRV', kind: 'line', data: shown.filter((r) => r.hrv).map((r) => ({ date: r.date, value: r.hrv! })) }]}
+          band={hrvB ? { lo: hrvB.mean - hrvB.sd, hi: hrvB.mean + hrvB.sd, label: 'Your normal range' } : undefined}
+          format={(v) => String(Math.round(v))}
+        />
+      </Card>
+      <ManualSleep />
+      {shown.some((r) => r.readiness) && <p className="px-1 text-xs text-faint">Oura readiness is stored but not used for decisions.</p>}
+    </>
+  );
+}
+
+function ManualSleep() {
+  const [date, setDate] = useState(today());
+  const [bed, setBed] = useState('22:00');
+  const [wake, setWake] = useState('06:30');
+  const [rhr, setRhr] = useState<number | null>(null);
+  const [hrv, setHrv] = useState<number | null>(null);
+  const existing = useLiveQuery(() => db.sleep.get(`sleep-${date}`), [date]);
+
+  const mins = (() => {
+    const [bh, bm] = bed.split(':').map(Number);
+    const [wh, wm] = wake.split(':').map(Number);
+    let m = wh * 60 + wm - (bh * 60 + bm);
+    if (m <= 0) m += 24 * 60;
+    return m;
+  })();
+
+  return (
+    <Card title="Log sleep manually">
+      <Field label="Morning of">
+        <input type="date" className={inputCls} value={date} max={today()} onChange={(e) => setDate(e.target.value)} />
+      </Field>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Lights out">
+          <input type="time" className={inputCls} value={bed} onChange={(e) => setBed(e.target.value)} />
+        </Field>
+        <Field label="Woke up">
+          <input type="time" className={inputCls} value={wake} onChange={(e) => setWake(e.target.value)} />
+        </Field>
+        <Field label="Resting HR">
+          <NumInput value={rhr} onChange={setRhr} />
+        </Field>
+        <Field label="HRV">
+          <NumInput value={hrv} onChange={setHrv} />
+        </Field>
+      </div>
+      <p className="mb-3 text-sm text-muted">
+        {Math.floor(mins / 60)} h {mins % 60} min in bed
+      </p>
+      <div className="flex gap-2">
+        <Button
+          variant="primary"
+          className="flex-1"
+          onClick={() =>
+            save('sleep', { ...(existing ?? {}), id: `sleep-${date}`, date, sleepMin: mins, bedtime: bed, wakeTime: wake, restingHr: rhr ?? existing?.restingHr, hrv: hrv ?? existing?.hrv, source: existing?.source ?? 'manual' })
+          }
+        >
+          Save
+        </Button>
+        {existing && (
+          <Button variant="danger" onClick={() => remove('sleep', existing.id)}>
+            Delete
+          </Button>
+        )}
+      </div>
+    </Card>
+  );
+}

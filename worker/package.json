@@ -1,0 +1,20 @@
+{
+  "name": "lock-in-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init": "wrangler d1 execute lock-in --remote --file=schema.sql",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261014.1",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.151.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "workerd@1.20261012.1": true
+  }
+}

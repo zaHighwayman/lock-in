@@ -1,0 +1,79 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0b0d10;
+  --color-surface: #14171c;
+  --color-surface-2: #1c2027;
+  --color-line: #272c35;
+  --color-ink: #eceef1;
+  --color-muted: #8d95a3;
+  --color-faint: #5c6370;
+  --color-accent: #c6f432;
+  --color-accent-ink: #11140a;
+  --color-good: #4ade80;
+  --color-warn: #f5b544;
+  --color-bad: #ff6b6b;
+  --color-info: #6cb4ff;
+  --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+:root {
+  color-scheme: dark;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  overscroll-behavior-y: none;
+}
+
+body {
+  min-height: 100dvh;
+  -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* numbers line up in tables and steppers */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+input,
+select,
+textarea {
+  font-size: 16px; /* stops iOS zooming on focus */
+}
+
+.safe-top {
+  padding-top: max(env(safe-area-inset-top), 0.75rem);
+}
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.md h2 {
+  font-weight: 600;
+  font-size: 0.95rem;
+  margin: 1rem 0 0.35rem;
+  color: var(--color-accent);
+}
+.md p,
+.md li {
+  line-height: 1.5;
+  color: var(--color-ink);
+}
+.md ol {
+  list-style: decimal;
+  padding-left: 1.25rem;
+}
+.md ul {
+  list-style: disc;
+  padding-left: 1.25rem;
+}
+.md strong {
+  font-weight: 600;
+}
