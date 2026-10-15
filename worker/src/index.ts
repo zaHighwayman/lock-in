@@ -517,7 +517,17 @@ async function ingestHealth(req: Request, env: Env) {
   const user = await env.DB.prepare('SELECT id FROM users WHERE ingest_hash = ?').bind(await sha256(key)).first<{ id: string }>();
   if (!user) throw new HttpError(401, 'Unknown Shortcut key. Create a new one in Lock-In → Settings → Apple Health.');
 
-  const b = await body<Record<string, unknown>>(req);
+  let raw: Record<string, unknown>;
+  try {
+    raw = (await req.json()) as Record<string, unknown>;
+  } catch {
+    await noteIngest(env, user.id, { ok: false, error: 'Body was not JSON. Set Request Body to JSON in Get Contents of URL.' });
+    throw new HttpError(400, 'Body was not JSON. In the Shortcut, set Request Body to JSON.');
+  }
+  // field names are matched case-insensitively ("Steps" works too)
+  const b: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(raw ?? {})) b[k.trim().toLowerCase()] = v;
+  const lower = (f: string) => f.toLowerCase();
   const date = typeof b.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.date.trim()) ? b.date.trim() : helsinkiDate(new Date());
   const now = Date.now();
   const existing = async (tbl: string, id: string) => {
@@ -530,7 +540,7 @@ async function ingestHealth(req: Request, env: Env) {
   // activity: merge so a partial send never erases fields sent earlier the same day
   const activity: Record<string, number> = {};
   for (const f of ACTIVITY_FIELDS) {
-    const v = num(b[f]);
+    const v = num(b[lower(f)]);
     if (v !== undefined && v >= 0) activity[f] = f === 'steps' || f === 'flights' ? Math.round(v) : Math.round(v * 100) / 100;
   }
   if (Object.keys(activity).length) {
@@ -542,7 +552,7 @@ async function ingestHealth(req: Request, env: Env) {
   // nutrition written to Apple Health by Cronometer → one "day total" food entry
   const nutrition: Record<string, number> = {};
   for (const [f, k] of Object.entries(NUTRITION_FIELDS)) {
-    const v = num(b[f]);
+    const v = num(b[lower(f)]);
     if (v !== undefined && v >= 0) nutrition[k] = Math.round(v * 10) / 10;
   }
   if ((nutrition.kcal ?? 0) > 0 || (nutrition.protein ?? 0) > 0) {
@@ -553,8 +563,28 @@ async function ingestHealth(req: Request, env: Env) {
     saved.push('nutrition');
   }
 
+  const fields = Object.keys(raw ?? {});
+  if (records.length === 0) {
+    const error = fields.length
+      ? `Nothing saved: no usable numbers. Received fields: ${fields.join(', ')}. Expected names like steps, activeKcal, distanceKm (as Number fields with your variables).`
+      : 'Nothing saved: the JSON body was empty. Add the fields under Request Body → JSON.';
+    await noteIngest(env, user.id, { ok: false, date, fields, error });
+    throw new HttpError(400, error);
+  }
   await upsert(env, user.id, records);
+  await noteIngest(env, user.id, { ok: true, date, fields, saved });
   return { ok: true, date, saved };
+}
+
+async function noteIngest(env: Env, userId: string, info: Record<string, unknown>) {
+  await env.DB.prepare('UPDATE users SET last_ingest_at = ?, last_ingest_info = ? WHERE id = ?').bind(Date.now(), JSON.stringify(info), userId).run();
+}
+
+async function ingestStatus(env: Env, user: User) {
+  const row = await env.DB.prepare('SELECT last_ingest_at, last_ingest_info, ingest_hash IS NOT NULL AS has_key FROM users WHERE id = ?')
+    .bind(user.id)
+    .first<{ last_ingest_at: number | null; last_ingest_info: string | null; has_key: number }>();
+  return { hasKey: !!row?.has_key, lastAt: row?.last_ingest_at ?? null, last: row?.last_ingest_info ? JSON.parse(row.last_ingest_info) : null };
 }
 
 // ---------------------------------------------------------------- router
@@ -595,6 +625,7 @@ async function route(req: Request, env: Env, url: URL): Promise<unknown> {
   }
 
   if (pathname === '/health/key' && post) return createIngestKey(env, user);
+  if (pathname === '/health/status' && req.method === 'GET') return ingestStatus(env, user);
 
   if (pathname === '/admin/overview' && req.method === 'GET') {
     requireAdmin(user);

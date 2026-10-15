@@ -1,7 +1,7 @@
 // Guide for the iPhone Shortcut that sends Apple Health day totals to the server.
 // (A web app can't read HealthKit; the Shortcut reads it on the phone and posts the numbers.)
 import { useLiveQuery } from 'dexie-react-hooks';
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { currentAccount } from '../db/account';
 import { setMeta } from '../db/repo';
@@ -37,6 +37,14 @@ function Copy({ text, label = 'Copy' }: { text: string; label?: string }) {
     </Button>
   );
 }
+
+interface IngestStatus {
+  hasKey: boolean;
+  lastAt: number | null;
+  last: { ok: boolean; date?: string; fields?: string[]; saved?: string[]; error?: string } | null;
+}
+
+const when = (ms: number) => new Date(ms).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' });
 
 function CopyRow({ value }: { value: string }) {
   return (
@@ -84,6 +92,22 @@ export default function HealthSetupPage() {
   const [error, setError] = useState<string | null>(null);
   const last = useLiveQuery(() => db.activity.orderBy('updatedAt').reverse().filter((a) => a.source === 'apple-health').first(), []);
   const endpoint = account ? `${account.server}/ingest/health` : '';
+  const [attempt, setAttempt] = useState<IngestStatus | null>(null);
+  const [checking, setChecking] = useState(false);
+  const check = async () => {
+    setChecking(true);
+    try {
+      setAttempt((await workerFetch('/health/status')) as IngestStatus);
+    } catch {
+      setAttempt(null);
+    } finally {
+      setChecking(false);
+    }
+  };
+  useEffect(() => {
+    if (account) void check();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (!account) {
     return (
@@ -104,16 +128,29 @@ export default function HealthSetupPage() {
         Web apps can't read Apple Health, so an iPhone Shortcut reads today's totals and sends them here. Set it up once (≈10 min); an automation then runs it every day.
       </p>
 
-      <Card title="Status">
-        <p className="text-sm">
-          {last ? (
-            <>
-              Last received: <b>{new Date(last.updatedAt).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' })}</b> ({last.steps?.toLocaleString('fi-FI') ?? '–'} steps on {last.date})
-            </>
-          ) : (
-            'Nothing received yet.'
-          )}
-        </p>
+      <Card title="Status" action={<Button size="sm" variant="ghost" onClick={check} disabled={checking}>{checking ? 'Checking…' : 'Refresh'}</Button>}>
+        {attempt?.lastAt ? (
+          <div className="space-y-1 text-sm">
+            <p>
+              Last attempt from your Shortcut: <b>{when(attempt.lastAt)}</b>{' '}
+              {attempt.last?.ok ? <span className="text-good">✓ saved</span> : <span className="text-bad">✗ not saved</span>}
+            </p>
+            {attempt.last?.fields && <p className="text-xs text-muted">Fields received: {attempt.last.fields.length ? attempt.last.fields.join(', ') : 'none'}</p>}
+            {attempt.last?.ok && attempt.last.saved && <p className="text-xs text-muted">Saved: {attempt.last.saved.join(', ')} for {attempt.last.date}</p>}
+            {!attempt.last?.ok && attempt.last?.error && <p className="rounded-lg bg-bad/10 px-2 py-1.5 text-xs text-bad">{attempt.last.error}</p>}
+          </div>
+        ) : (
+          <p className="text-sm">
+            {attempt?.hasKey === false
+              ? 'No Shortcut key yet. Start with step 1.'
+              : 'The server has not received anything from your Shortcut yet. If you ran it, check the header (step 4.5): a wrong key is rejected before it gets this far.'}
+          </p>
+        )}
+        {last && (
+          <p className="mt-2 text-xs text-faint">
+            Latest data in the app: {when(last.updatedAt)} ({last.steps?.toLocaleString('fi-FI') ?? '–'} steps on {last.date})
+          </p>
+        )}
       </Card>
 
       <Step n={1} title="Create your Shortcut key">
