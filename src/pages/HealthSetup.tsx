@@ -4,6 +4,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { currentAccount } from '../db/account';
+import { setMeta } from '../db/repo';
 import { db } from '../db/schema';
 import { workerFetch } from '../db/sync';
 import { Button, Card, ErrorNote, Page } from '../ui/kit';
@@ -37,6 +38,32 @@ function Copy({ text, label = 'Copy' }: { text: string; label?: string }) {
   );
 }
 
+function CopyRow({ value }: { value: string }) {
+  return (
+    <div className="my-1 flex items-center gap-2 rounded-lg bg-surface-2 p-2">
+      <code className="flex-1 break-all text-xs">{value}</code>
+      <Copy text={value} />
+    </div>
+  );
+}
+
+function CopyChip({ value }: { value: string }) {
+  const [done, setDone] = useState(false);
+  return (
+    <button
+      className={`rounded-full border px-2.5 py-1 font-mono text-xs ${done ? 'border-good/50 text-good' : 'border-line bg-surface-2'}`}
+      onClick={async () => {
+        await navigator.clipboard?.writeText(value);
+        setDone(true);
+        setTimeout(() => setDone(false), 1200);
+      }}
+    >
+      {done ? '✓ ' : ''}
+      {value}
+    </button>
+  );
+}
+
 function Step({ n, title, children }: { n: number; title: string; children: ReactNode }) {
   return (
     <Card>
@@ -52,7 +79,8 @@ function Step({ n, title, children }: { n: number; title: string; children: Reac
 export default function HealthSetupPage() {
   const nav = useNavigate();
   const account = currentAccount();
-  const [key, setKey] = useState<string | null>(null);
+  // kept on this device only (never synced), so it survives switching to the Shortcuts app and back
+  const key = (useLiveQuery(() => db.meta.get('health:key'), [])?.value as string | undefined) ?? null;
   const [error, setError] = useState<string | null>(null);
   const last = useLiveQuery(() => db.activity.orderBy('updatedAt').reverse().filter((a) => a.source === 'apple-health').first(), []);
   const endpoint = account ? `${account.server}/ingest/health` : '';
@@ -89,30 +117,31 @@ export default function HealthSetupPage() {
       </Card>
 
       <Step n={1} title="Create your Shortcut key">
-        <p className="text-muted">A separate key just for the Shortcut. Creating a new one stops the old one working.</p>
-        {key ? (
+        <p className="text-muted">A separate key just for the Shortcut (not your password). Making a new one stops the old one working.</p>
+        {key && (
           <div className="rounded-xl bg-surface-2 p-3">
             <code className="block break-all text-xs">{key}</code>
             <div className="mt-2 flex items-center gap-2">
               <Copy text={key} />
-              <span className="text-xs text-warn">Shown once. Paste it into the Shortcut now.</span>
+              <span className="text-xs text-faint">Saved on this device. Steps below have copy buttons that include it.</span>
             </div>
           </div>
-        ) : (
-          <Button
-            variant="primary"
-            onClick={async () => {
-              setError(null);
-              try {
-                setKey(((await workerFetch('/health/key', { method: 'POST' })) as { key: string }).key);
-              } catch (e) {
-                setError(e instanceof Error ? e.message : String(e));
-              }
-            }}
-          >
-            {last ? 'Create a new key' : 'Create key'}
-          </Button>
         )}
+        <Button
+          variant={key ? 'ghost' : 'primary'}
+          onClick={async () => {
+            if (key && !confirm('Make a new key? The Shortcut stops working until you paste the new one into it.')) return;
+            setError(null);
+            try {
+              const r = (await workerFetch('/health/key', { method: 'POST' })) as { key: string };
+              await setMeta('health:key', r.key);
+            } catch (e) {
+              setError(e instanceof Error ? e.message : String(e));
+            }
+          }}
+        >
+          {key ? 'Make a new key' : 'Create key'}
+        </Button>
         <ErrorNote error={error} />
       </Step>
 
@@ -157,40 +186,107 @@ export default function HealthSetupPage() {
         </p>
       </Step>
 
-      <Step n={3} title="Send them to Lock-In">
-        <ol className="list-decimal space-y-1 pl-5">
+      <Step n={3} title="Get today's date">
+        <p className="text-muted">The server needs to know which day the numbers belong to.</p>
+        <ol className="list-decimal space-y-2 pl-5">
           <li>
-            Add <b>Format Date</b>: Current Date, Date Format <b>Custom</b>, format <code>yyyy-MM-dd</code>. Then <b>Set Variable</b> named <code>day</code>.
+            At the bottom, search for <b>Format Date</b> and tap it to add it.
           </li>
           <li>
-            Add <b>Get Contents of URL</b>:
-            <div className="my-1 flex items-center gap-2 rounded-lg bg-surface-2 p-2">
-              <code className="flex-1 break-all text-xs">{endpoint}</code>
-              <Copy text={endpoint} />
+            In that action, tap the blue <b>Date</b> → choose <b>Current Date</b>.
+          </li>
+          <li>
+            Tap the small arrow (<b>›</b>) on the action to show more options. Set <b>Date Format</b> to <b>Custom</b>, then type this into <b>Format String</b>:
+            <CopyRow value="yyyy-MM-dd" />
+          </li>
+          <li>
+            Add <b>Set Variable</b>. Tap <i>Variable Name</i> and type:
+            <CopyRow value="day" />
+            Its input should already say <i>Formatted Date</i>.
+          </li>
+        </ol>
+      </Step>
+
+      <Step n={4} title="Send everything to Lock-In">
+        <ol className="list-decimal space-y-2 pl-5">
+          <li>
+            Search for <b>Get Contents of URL</b> and add it.
+          </li>
+          <li>
+            Tap the blue <b>URL</b> and paste:
+            <CopyRow value={endpoint} />
+          </li>
+          <li>
+            Tap the arrow (<b>›</b>) on the action to open its options.
+          </li>
+          <li>
+            <b>Method</b>: tap <i>GET</i> and change it to <b>POST</b>.
+          </li>
+          <li>
+            <b>Headers</b>: tap <i>Add new header</i>.
+            <div className="mt-1 space-y-1">
+              <div className="text-xs text-muted">Key</div>
+              <CopyRow value="Authorization" />
+              <div className="text-xs text-muted">Text (the value)</div>
+              {key ? (
+                <CopyRow value={`Bearer ${key}`} />
+              ) : (
+                <p className="rounded-lg bg-warn/10 px-2 py-1.5 text-xs text-warn">
+                  Create your key in step 1 first. A copy button with the full value (<code>Bearer</code> + space + key) appears here.
+                </p>
+              )}
             </div>
-            Tap <i>Show More</i>: Method <b>POST</b>.<br />
-            Headers: add <code>Authorization</code> with the value <code>Bearer </code> followed by your key (one space after Bearer).
-            <br />
-            Request Body: <b>JSON</b>. Add a <b>Text</b> field <code>date</code> = the <code>day</code> variable, then a <b>Number</b> field for each variable from step 2 with the same name (<code>steps</code> = steps, …).
           </li>
+          <li>
+            <b>Request Body</b>: choose <b>JSON</b>.
+          </li>
+          <li>
+            Tap <i>Add new field</i> → <b>Text</b>. Key:
+            <CopyRow value="date" />
+            For the value, long-press (or tap) the text field → <b>Select Variable</b> → tap the <b>day</b> variable.
+          </li>
+          <li>
+            Now one <b>Number</b> field for each variable you made in step 2. Tap <i>Add new field</i> → <b>Number</b>, type the key, and pick the variable with the <b>same name</b> as the value:
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {FIELDS.map((f) => (
+                <CopyChip key={f.field} value={f.field} />
+              ))}
+            </div>
+            <span className="mt-1 block text-xs text-faint">Only add the ones you made in step 2. Tap a name to copy it.</span>
+          </li>
+        </ol>
+        <p className="rounded-lg bg-surface-2 px-3 py-2 text-xs text-muted">
+          When it's done, the action reads like: <i>Get contents of …/ingest/health</i>, Method POST, 1 header, and a JSON body with <code>date</code>, <code>steps</code>, <code>activeKcal</code>…
+        </p>
+      </Step>
+
+      <Step n={5} title="Run it every day">
+        <ol className="list-decimal space-y-2 pl-5">
+          <li>
+            In Shortcuts, open the <b>Automation</b> tab → <b>+</b> (or <i>New Automation</i>) → <b>Time of Day</b>.
+          </li>
+          <li>
+            Set <b>23:45</b>, <b>Daily</b>, and choose <b>Run Immediately</b> (not "Run After Confirmation"). Tap <i>Next</i>.
+          </li>
+          <li>
+            Pick <b>Lock-In Health</b>.
+          </li>
+          <li>Optional: repeat for 12:00 and 18:00 so steps update during the day.</li>
         </ol>
       </Step>
 
-      <Step n={4} title="Run it every day">
-        <ol className="list-decimal space-y-1 pl-5">
+      <Step n={6} title="Test it">
+        <ol className="list-decimal space-y-2 pl-5">
           <li>
-            Shortcuts → <b>Automation</b> → <b>+</b> → <b>Time of Day</b> → <b>23:45</b>, Daily.
+            Open the <b>Lock-In Health</b> shortcut and tap ▶︎ to run it.
           </li>
+          <li>iOS asks to read Health data and to connect to your server: <b>Allow</b> both.</li>
           <li>
-            Choose <b>Run Immediately</b> (not "Run After Confirmation"), then pick <b>Lock-In Health</b>.
+            It should finish with a reply containing <code>"ok":true</code>. Come back here: the <b>Status</b> at the top updates within a minute.
           </li>
-          <li>Optional: add the same automation at 12:00 and 18:00 so steps update during the day.</li>
         </ol>
-      </Step>
-
-      <Step n={5} title="Test it">
-        <p>
-          Run <b>Lock-In Health</b> once by hand. iOS asks to allow Health access and to connect to your server: allow both. The reply should say <code>"ok": true</code>, and the status at the top of this page updates after the next sync.
+        <p className="text-xs text-faint">
+          Error "Unknown Shortcut key" → the header value is wrong or you made a new key since. Error "Missing Shortcut key" → the header key isn't exactly <code>Authorization</code>.
         </p>
       </Step>
     </Page>
