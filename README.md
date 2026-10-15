@@ -21,7 +21,11 @@ Your logs never go into the repo. Only the code and seed data (program, recipes,
 Settings (gear icon on Today) and your profile:
 
 - **Profile → Salt limit**: the g/day number from your doctor or dietitian (if you were given sodium in mg, divide by 400).
-- **AI coach → Gemini API key**: create one at <https://aistudio.google.com/apikey>. The key is stored only on the device. In Google Cloud Console → Credentials, restrict the key to **HTTP referrers** `https://<your-username>.github.io/*` so it's useless anywhere else.
+- **AI coach**: pick a provider and paste its free API key (stored only on the device):
+  - **Gemini**: <https://aistudio.google.com/apikey>. Good quality, but the free tier is often busy.
+  - **Groq**: <https://console.groq.com/keys>. Very fast, generous free tier, reads food photos with its vision model.
+  - **Other**: any OpenAI-compatible API (OpenRouter, Cerebras, Mistral…) via base URL + key.
+  - Set a **fallback**: when the main provider is busy or failing, the app retries once and then switches to it. Gemini + Groq fallback is a good free combination.
 - **Taste preferences** for recipes.
 - **Food → Library → Quick meals**: edit Huel / school lunch / pre-gym snack / rahka to match your real portions and labels.
 - Program start date is set automatically on your first workout (Monday of that week); change it under Program.

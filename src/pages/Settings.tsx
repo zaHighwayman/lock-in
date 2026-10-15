@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { CSV_EXPORTS, exportCsv, exportJson, importJson } from '../app/backup';
 import { useBodyweight, useSettings, useSyncStatus } from '../app/hooks';
-import { getProvider } from '../ai/provider';
+import { GROQ_URL, listModels, providerById } from '../ai/provider';
 import { WEEKDAYS } from '../core/dates';
-import type { RunPlanDay, Settings } from '../core/model';
+import type { AiProviderId, RunPlanDay, Settings } from '../core/model';
 import { fmtSalt, proteinTarget } from '../core/rules/nutrition';
 import { adminOverview, changePassword, createInvite, deleteAccount, signOut, type AdminOverview } from '../app/auth';
 import { currentAccount } from '../db/account';
@@ -108,74 +108,172 @@ function useSecret(key: string) {
   return [v, (x: string) => { setV(x); setMeta(key, x.trim()); }] as const;
 }
 
-function AiSettings({ s, set }: { s: Settings; set: (c: Partial<Settings>) => void }) {
-  const [gemini, setGemini] = useSecret('key:gemini');
-  const [claude, setClaude] = useSecret('key:anthropic');
-  const [test, setTest] = useState<string | null>(null);
+const PROVIDER_OPTIONS: { value: AiProviderId; label: string }[] = [
+  { value: 'gemini', label: 'Gemini (free tier)' },
+  { value: 'groq', label: 'Groq (free tier, fast)' },
+  { value: 'openai', label: 'Other: OpenRouter, Cerebras, Mistral…' },
+  { value: 'anthropic', label: 'Claude' },
+  { value: 'ollama', label: 'Ollama (local, PC only)' },
+];
+
+/** Model name field with an optional "load list" button for OpenAI-compatible APIs. */
+function ModelField({ label, hint, value, onCommit, listFrom }: { label: string; hint?: string; value: string; onCommit: (v: string) => void; listFrom?: { url: string; keyName: string } }) {
+  const [models, setModels] = useState<string[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   return (
-    <Card title="AI coach">
-      <Field label="Provider">
-        <select className={inputCls} value={s.aiProvider} onChange={(e) => set({ aiProvider: e.target.value as Settings['aiProvider'] })}>
-          <option value="gemini">Gemini (free tier)</option>
-          <option value="anthropic">Claude</option>
-          <option value="ollama">Ollama (local, PC only)</option>
-          <option value="none">Off (rules only)</option>
-        </select>
-      </Field>
-      {s.aiProvider === 'gemini' && (
-        <>
-          <Field label="Gemini API key" hint="Create one at aistudio.google.com. Stored only on this device.">
-            <input type="password" autoComplete="off" className={inputCls} value={gemini} onChange={(e) => setGemini(e.target.value)} />
-          </Field>
-          <Field label="Model">
-            <LiveText value={s.geminiModel} onCommit={(v) => set({ geminiModel: v.trim() })} />
-          </Field>
-          <p className="mb-3 rounded-lg bg-warn/10 px-3 py-2 text-xs text-warn">
-            Gemini's free tier may use what you send (including food photos) to improve Google's models. The weekly report only sends aggregated weekly numbers.
-          </p>
-        </>
-      )}
-      {s.aiProvider === 'anthropic' && (
-        <>
-          <Field label="Claude API key" hint="From console.anthropic.com. Stored only on this device.">
-            <input type="password" autoComplete="off" className={inputCls} value={claude} onChange={(e) => setClaude(e.target.value)} />
-          </Field>
-          <Field label="Model">
-            <LiveText value={s.anthropicModel} onCommit={(v) => set({ anthropicModel: v.trim() })} />
-          </Field>
-        </>
-      )}
-      {s.aiProvider === 'ollama' && (
-        <>
-          <Field label="Ollama URL" hint="Works from the computer running Ollama. Start it with OLLAMA_ORIGINS set to this site's address.">
-            <LiveText value={s.ollamaUrl} onCommit={(v) => set({ ollamaUrl: v.trim() })} />
-          </Field>
-          <Field label="Model" hint="Food photo scanning needs a vision model (e.g. llava, llama3.2-vision).">
-            <LiveText value={s.ollamaModel} onCommit={(v) => set({ ollamaModel: v.trim() })} />
-          </Field>
-        </>
-      )}
-      {s.aiProvider !== 'none' && (
-        <>
+    <Field label={label} hint={hint}>
+      <div className="flex gap-2">
+        {models ? (
+          <select className={inputCls} value={models.includes(value) ? value : ''} onChange={(e) => onCommit(e.target.value)}>
+            <option value="">{value ? `${value} (not in list)` : 'Choose…'}</option>
+            {models.map((m) => (
+              <option key={m}>{m}</option>
+            ))}
+          </select>
+        ) : (
+          <LiveText value={value} onCommit={(v) => onCommit(v.trim())} placeholder="model id" />
+        )}
+        {listFrom && (
           <Button
             size="sm"
             onClick={async () => {
-              setTest(null);
               setErr(null);
               try {
-                const ai = await getProvider(s);
-                const r = await ai.generate('Reply with exactly: ok', [{ role: 'user', text: 'ping' }]);
-                setTest(`${ai.name}: ${r.trim().slice(0, 40)}`);
+                setModels(await listModels(listFrom.url, await getMeta<string>(listFrom.keyName, '')));
               } catch (e) {
                 setErr(e instanceof Error ? e.message : String(e));
               }
             }}
           >
-            Test connection
+            {models ? '↻' : 'List'}
           </Button>
-          {test && <p className="mt-2 text-sm text-good">✓ {test}</p>}
-          <ErrorNote error={err} />
+        )}
+      </div>
+      <ErrorNote error={err} />
+    </Field>
+  );
+}
+
+function KeyField({ name, label, hint }: { name: string; label: string; hint: string }) {
+  const [v, setV] = useSecret(`key:${name}`);
+  return (
+    <Field label={label} hint={hint}>
+      <input type="password" autoComplete="off" className={inputCls} value={v} onChange={(e) => setV(e.target.value)} />
+    </Field>
+  );
+}
+
+function ProviderFields({ id, s, set }: { id: AiProviderId; s: Settings; set: (c: Partial<Settings>) => void }) {
+  switch (id) {
+    case 'gemini':
+      return (
+        <>
+          <KeyField name="gemini" label="Gemini API key" hint="Create one at aistudio.google.com. Stored only on this device." />
+          <ModelField label="Gemini model" hint="If it's often busy, try a lighter model such as gemini-flash-lite-latest." value={s.geminiModel} onCommit={(v) => set({ geminiModel: v })} />
+          <p className="mb-3 rounded-lg bg-warn/10 px-3 py-2 text-xs text-warn">Gemini's free tier may use what you send (including food photos) to improve Google's models.</p>
+        </>
+      );
+    case 'groq':
+      return (
+        <>
+          <KeyField name="groq" label="Groq API key" hint="Free at console.groq.com → API Keys. Stored only on this device." />
+          <ModelField label="Text model" value={s.groqModel} onCommit={(v) => set({ groqModel: v })} listFrom={{ url: GROQ_URL, keyName: 'key:groq' }} />
+          <ModelField label="Vision model (food photos)" hint="Needs a model that accepts images (see console.groq.com/docs/vision)." value={s.groqVisionModel} onCommit={(v) => set({ groqVisionModel: v })} listFrom={{ url: GROQ_URL, keyName: 'key:groq' }} />
+          <p className="mb-3 text-xs text-faint">The free plan has per-minute and daily limits. Check Groq's terms for how they handle your data.</p>
+        </>
+      );
+    case 'openai':
+      return (
+        <>
+          <Field label="API base URL" hint="OpenRouter: https://openrouter.ai/api/v1 · Cerebras: https://api.cerebras.ai/v1 · Mistral: https://api.mistral.ai/v1">
+            <LiveText value={s.openaiBaseUrl} onCommit={(v) => set({ openaiBaseUrl: v.trim() })} />
+          </Field>
+          <KeyField name="openai" label="API key" hint="Stored only on this device." />
+          <ModelField label="Text model" hint="On OpenRouter, free models end in :free." value={s.openaiModel} onCommit={(v) => set({ openaiModel: v })} listFrom={{ url: s.openaiBaseUrl, keyName: 'key:openai' }} />
+          <ModelField label="Vision model (food photos, optional)" hint="Leave empty to use the text model; it must then accept images." value={s.openaiVisionModel} onCommit={(v) => set({ openaiVisionModel: v })} listFrom={{ url: s.openaiBaseUrl, keyName: 'key:openai' }} />
+        </>
+      );
+    case 'anthropic':
+      return (
+        <>
+          <KeyField name="anthropic" label="Claude API key" hint="From console.anthropic.com. Stored only on this device." />
+          <ModelField label="Claude model" value={s.anthropicModel} onCommit={(v) => set({ anthropicModel: v })} />
+        </>
+      );
+    case 'ollama':
+      return (
+        <>
+          <Field label="Ollama URL" hint="Works from the computer running Ollama. Start it with OLLAMA_ORIGINS set to this site's address.">
+            <LiveText value={s.ollamaUrl} onCommit={(v) => set({ ollamaUrl: v.trim() })} />
+          </Field>
+          <ModelField label="Ollama model" hint="Food photo scanning needs a vision model (e.g. llama3.2-vision)." value={s.ollamaModel} onCommit={(v) => set({ ollamaModel: v })} />
+        </>
+      );
+  }
+}
+
+function TestButton({ id, s, label }: { id: AiProviderId; s: Settings; label: string }) {
+  const [ok, setOk] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  return (
+    <div className="mb-3">
+      <Button
+        size="sm"
+        onClick={async () => {
+          setOk(null);
+          setErr(null);
+          try {
+            const ai = await providerById(id, s);
+            const r = await ai.generate('Reply with exactly: ok', [{ role: 'user', text: 'ping' }]);
+            setOk(`${ai.name}: ${r.trim().slice(0, 40)}`);
+          } catch (e) {
+            setErr(e instanceof Error ? e.message : String(e));
+          }
+        }}
+      >
+        {label}
+      </Button>
+      {ok && <p className="mt-2 text-sm text-good">✓ {ok}</p>}
+      <ErrorNote error={err} />
+    </div>
+  );
+}
+
+function AiSettings({ s, set }: { s: Settings; set: (c: Partial<Settings>) => void }) {
+  return (
+    <Card title="AI coach">
+      <Field label="Provider">
+        <select className={inputCls} value={s.aiProvider} onChange={(e) => set({ aiProvider: e.target.value as Settings['aiProvider'] })}>
+          {PROVIDER_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+          <option value="none">Off (rules only)</option>
+        </select>
+      </Field>
+      {s.aiProvider !== 'none' && (
+        <>
+          <ProviderFields id={s.aiProvider} s={s} set={set} />
+          <TestButton id={s.aiProvider} s={s} label="Test connection" />
+          <div className="mt-2 border-t border-line pt-3">
+            <Field label="When it's busy or failing, switch to" hint="The app retries once, then uses this. Set it up with a different provider so one outage doesn't stop the coach.">
+              <select className={inputCls} value={s.aiFallback} onChange={(e) => set({ aiFallback: e.target.value as Settings['aiFallback'] })}>
+                <option value="none">No fallback</option>
+                {PROVIDER_OPTIONS.filter((o) => o.value !== s.aiProvider).map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            {s.aiFallback !== 'none' && s.aiFallback !== s.aiProvider && (
+              <>
+                <ProviderFields id={s.aiFallback} s={s} set={set} />
+                <TestButton id={s.aiFallback} s={s} label="Test fallback" />
+              </>
+            )}
+          </div>
         </>
       )}
     </Card>

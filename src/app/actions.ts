@@ -7,12 +7,13 @@ import type {
 import { isDeloadWeek, prefill, suggestNext, type ExerciseSession, type Target } from '../core/rules/lifting';
 import { perPortion, roundN } from '../core/rules/nutrition';
 import { save, saveMany, patch, remove, uid } from '../db/repo';
+import { withDefaults } from '../db/seed';
 import { db } from '../db/schema';
 
 export async function getSettings(): Promise<Settings> {
   const s = await db.settings.get('settings');
   if (!s) throw new Error('Settings missing');
-  return s;
+  return withDefaults(s);
 }
 
 export function targetFor(item: Pick<ProgramItem, 'sets' | 'repMin' | 'repMax'>, ex: Exercise): Target {

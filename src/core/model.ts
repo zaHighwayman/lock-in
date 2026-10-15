@@ -232,6 +232,8 @@ export interface RunPlanDay {
 
 export type Goal = 'recomp' | 'lean-bulk' | 'cut';
 
+export type AiProviderId = 'gemini' | 'groq' | 'openai' | 'anthropic' | 'ollama';
+
 /** The parts of Settings that shape coaching, recipes and guardrails. */
 export interface Profile {
   displayName?: string;
@@ -258,7 +260,15 @@ export interface Settings extends Base, Profile {
   deloadEvery: number;
   recompWeeks: number;
   runSchedule: Record<string, RunPlanDay>;
-  aiProvider: 'gemini' | 'anthropic' | 'ollama' | 'none';
+  aiProvider: AiProviderId | 'none';
+  /** tried when the main provider is busy, rate-limited or failing */
+  aiFallback: AiProviderId | 'none';
+  groqModel: string;
+  groqVisionModel: string;
+  /** any OpenAI-compatible API: OpenRouter, Cerebras, Mistral… */
+  openaiBaseUrl: string;
+  openaiModel: string;
+  openaiVisionModel: string;
   geminiModel: string;
   anthropicModel: string;
   ollamaModel: string;

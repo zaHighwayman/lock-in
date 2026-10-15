@@ -3,12 +3,12 @@ import { useEffect, useState } from 'react';
 import { addDays, today } from '../core/dates';
 import type { Settings } from '../core/model';
 import { db } from '../db/schema';
-import { DEFAULT_SETTINGS } from '../db/seed';
+import { withDefaults } from '../db/seed';
 import { getSyncStatus, subscribeSync, type SyncStatus } from '../db/sync';
 import { avg7 } from '../core/rules/bodycomp';
 
 export function useSettings(): Settings {
-  return useLiveQuery(() => db.settings.get('settings'), []) ?? DEFAULT_SETTINGS;
+  return withDefaults(useLiveQuery(() => db.settings.get('settings'), []));
 }
 
 /** 7-day average weight, falling back to the latest weigh-in, then the profile's 68 kg. */

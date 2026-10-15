@@ -122,13 +122,24 @@ export const DEFAULT_SETTINGS: Settings = {
     '7': { run: 'optional-easy', note: 'Optional easy 30–45 min · cook day' },
   },
   aiProvider: 'gemini',
+  aiFallback: 'none',
   geminiModel: 'gemini-flash-latest',
+  groqModel: 'openai/gpt-oss-120b',
+  groqVisionModel: 'qwen/qwen3.8-27b',
+  openaiBaseUrl: 'https://openrouter.ai/api/v1',
+  openaiModel: '',
+  openaiVisionModel: '',
   anthropicModel: 'claude-haiku-5-5',
   ollamaModel: 'llama3.1',
   ollamaUrl: 'http://localhost:11434',
   workerUrl: '',
   foodPreferences: '',
 };
+
+/** Stored settings over defaults, so fields added in later versions always have a value. */
+export function withDefaults(s: Settings | undefined): Settings {
+  return { ...DEFAULT_SETTINGS, ...(s ?? {}) };
+}
 
 /** The original owner's profile (from the build spec). Applied once to installs that predate profiles. */
 export const ORIGINAL_PROFILE: Partial<Settings> = {
