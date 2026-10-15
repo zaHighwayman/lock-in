@@ -8,7 +8,7 @@ import { describeEdit } from '../core/coach/taste';
 import { today } from '../core/dates';
 import type { Recipe, RecipeIngredient } from '../core/model';
 import { forbiddenIngredient } from '../core/rules/guardrails';
-import { perPortion, watchlistHits } from '../core/rules/nutrition';
+import { fmtSalt, perPortion, watchlistHits } from '../core/rules/nutrition';
 import { patch, save, uid } from '../db/repo';
 import { db } from '../db/schema';
 import { NutrientLine } from '../features/AddFoodSheet';
@@ -50,9 +50,9 @@ export default function RecipePage() {
           <Stat label="Fat" value={`${p.fat} g`} />
         </div>
         <div className="flex justify-between text-sm">
-          <span className="text-muted">Sodium per portion</span>
+          <span className="text-muted">Salt per portion</span>
           <span className={cx('tnum', sodiumShare !== null && sodiumShare > 0.35 ? 'text-warn' : 'text-ink')}>
-            {p.sodiumMg} mg{sodiumShare !== null ? ` (${Math.round(sodiumShare * 100)} % of daily)` : ''}
+            {fmtSalt(p.sodiumMg)} g{sodiumShare !== null ? ` (${Math.round(sodiumShare * 100)} % of daily)` : ''}
           </span>
         </div>
         <div className="mt-1 text-xs text-muted">
@@ -120,7 +120,7 @@ export default function RecipePage() {
               <li key={k} className="flex justify-between border-b border-line py-1.5 last:border-0">
                 <span>
                   {i.name}
-                  {watch && <span className="ml-1 text-xs text-warn">sodium</span>}
+                  {watch && <span className="ml-1 text-xs text-warn">salt</span>}
                 </span>
                 <span className="tnum text-muted">{i.grams} g</span>
               </li>
@@ -183,7 +183,7 @@ function EditSheet({ recipe, onClose }: { recipe: Recipe; onClose: () => void })
 
   async function saveIt() {
     const bad = r.ingredients.map((i) => forbiddenIngredient(i.name, settings.lowSodium)).find(Boolean);
-    if (bad) return setError(`Not allowed on your low-sodium diet: ${bad}.`);
+    if (bad) return setError(`Not allowed on your low-salt diet: ${bad}.`);
     const detail = describeEdit(recipe, r);
     await save('recipes', { ...r, steps: r.steps.filter((s) => s.trim()) });
     if (detail) await save('recipeFeedback', { id: uid(), recipeId: r.id, recipeName: r.name, date: today(), kind: 'edit', detail });

@@ -85,7 +85,7 @@ export async function exportCsv(kind: keyof typeof CSV_EXPORTS) {
   } else if (kind === 'sleep') {
     rows = [['date', 'sleep_min', 'bedtime', 'wake', 'resting_hr', 'hrv', 'readiness', 'source'], ...(await db.sleep.orderBy('date').toArray()).map((s) => [s.date, s.sleepMin, s.bedtime, s.wakeTime, s.restingHr, s.hrv, s.readiness, s.source])];
   } else {
-    rows = [['date', 'meal', 'name', 'grams', 'kcal', 'protein_g', 'carbs_g', 'fat_g', 'sodium_mg'], ...(await db.foodLog.orderBy('date').toArray()).map((f) => [f.date, f.slot, f.name, f.grams, f.nutrients.kcal, f.nutrients.protein, f.nutrients.carbs, f.nutrients.fat, f.nutrients.sodiumMg])];
+    rows = [['date', 'meal', 'name', 'grams', 'kcal', 'protein_g', 'carbs_g', 'fat_g', 'salt_g'], ...(await db.foodLog.orderBy('date').toArray()).map((f) => [f.date, f.slot, f.name, f.grams, f.nutrients.kcal, f.nutrients.protein, f.nutrients.carbs, f.nutrients.fat, Math.round(f.nutrients.sodiumMg / 4) / 100])];
   }
   await deliver(`lock-in-${kind}-${today()}.csv`, new Blob([csv(rows)], { type: 'text/csv' }));
 }

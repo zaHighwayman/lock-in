@@ -8,10 +8,10 @@ import { generateRecipe, type RecipeResult } from '../ai/tasks';
 import { tasteProfile } from '../core/coach/taste';
 import { addDays, diffDays, shortDate, today, weekday, WEEKDAYS } from '../core/dates';
 import type { Food, FoodLogEntry, MealPlan, MealPrepBatch, Nutrients, Recipe, SavedMeal } from '../core/model';
-import { dayFlags, dayTotals, forGrams, perPortion, proteinTarget, watchlistHits } from '../core/rules/nutrition';
+import { dayFlags, dayTotals, fmtSalt, forGrams, perPortion, proteinTarget, watchlistHits } from '../core/rules/nutrition';
 import { patch, remove, save, uid } from '../db/repo';
 import { db } from '../db/schema';
-import AddFoodSheet, { NutrientLine, QuickMeals, SLOTS } from '../features/AddFoodSheet';
+import AddFoodSheet, { NutrientInputs, NutrientLine, QuickMeals, SLOTS } from '../features/AddFoodSheet';
 import { Bar, Button, Card, Empty, ErrorNote, Field, FlagList, NumInput, Page, Segmented, Sheet, Stat, cx, inputCls } from '../ui/kit';
 
 type Tab = 'day' | 'recipes' | 'prep' | 'library';
@@ -75,12 +75,12 @@ function DayLog() {
         </div>
         <Bar value={totals.protein} max={pTarget} tone={totals.protein >= pTarget ? 'good' : 'accent'} />
         <div className="mt-3 flex justify-between text-sm">
-          <span className="text-muted">Sodium</span>
+          <span className="text-muted">Salt</span>
           <span className={cx('tnum', settings.sodiumCeilingMg && totals.sodiumMg > settings.sodiumCeilingMg ? 'text-bad' : 'text-ink')}>
-            {totals.sodiumMg} mg{settings.sodiumCeilingMg ? ` / ${settings.sodiumCeilingMg}` : ''}
+            {fmtSalt(totals.sodiumMg)}{settings.sodiumCeilingMg ? ` / ${fmtSalt(settings.sodiumCeilingMg)}` : ''} g
           </span>
         </div>
-        {settings.lowSodium && !settings.sodiumCeilingMg && <p className="mt-1 text-xs text-faint">Set your sodium ceiling in your profile to track it against your limit.</p>}
+        {settings.lowSodium && !settings.sodiumCeilingMg && <p className="mt-1 text-xs text-faint">Set your salt limit in your profile to track it.</p>}
         <div className="mt-3">
           <FlagList flags={dayFlags(totals, pTarget, settings.sodiumCeilingMg)} />
         </div>
@@ -147,14 +147,7 @@ function EntrySheet({ entry, onClose }: { entry: FoodLogEntry; onClose: () => vo
           <NumInput value={grams} onChange={setGrams} />
         </Field>
       ) : (
-        <div className="mb-3 grid grid-cols-5 gap-2 text-center text-xs">
-          {(['kcal', 'protein', 'carbs', 'fat', 'sodiumMg'] as const).map((k) => (
-            <label key={k}>
-              <span className="text-muted">{k === 'sodiumMg' ? 'Na mg' : k === 'kcal' ? 'kcal' : k[0].toUpperCase() + k.slice(1, 4)}</span>
-              <NumInput className="mt-1 px-1 py-1.5 text-center text-sm" value={n[k]} onChange={(v) => setN({ ...n, [k]: v ?? 0 })} />
-            </label>
-          ))}
-        </div>
+        <NutrientInputs n={n} onChange={setN} />
       )}
       <div className="mb-4">
         <NutrientLine n={shown} />
@@ -235,7 +228,7 @@ function Recipes() {
               <span className="rounded-full bg-surface-2 px-2 py-0.5 text-muted">{r.servings} portions</span>
               <span className="rounded-full bg-surface-2 px-2 py-0.5 text-muted">{r.freezerFriendly ? 'freezer' : `fridge ${r.fridgeDays ?? 3} d`}</span>
               {r.source === 'ai' && <span className="rounded-full bg-accent/10 px-2 py-0.5 text-accent">AI</span>}
-              {flagged && <span className="rounded-full bg-warn/15 px-2 py-0.5 text-warn">sodium watch</span>}
+              {flagged && <span className="rounded-full bg-warn/15 px-2 py-0.5 text-warn">salt watch</span>}
             </div>
           </button>
         );
@@ -316,7 +309,7 @@ export function GenerateSheet({ onClose, base }: { onClose: () => void; base?: R
             <NumInput value={servings} onChange={setServings} />
           </Field>
           <p className="mb-3 text-xs text-faint">
-            Targets ~{proteinPer} g protein per portion{settings.lowSodium ? (sodiumPer ? `, under ${sodiumPer} mg sodium, no added salt` : ', low sodium, no added salt') : ''}{settings.dietNotes ? `, respecting: ${settings.dietNotes}` : ''}. Learns from your likes, dislikes and edits.
+            Targets ~{proteinPer} g protein per portion{settings.lowSodium ? (sodiumPer ? `, under ${fmtSalt(sodiumPer)} g salt, no added salt` : ', low salt, no added salt') : ''}{settings.dietNotes ? `, respecting: ${settings.dietNotes}` : ''}. Learns from your likes, dislikes and edits.
           </p>
           <ErrorNote error={error} />
           <Button variant="primary" className="w-full" disabled={busy} onClick={run}>
@@ -356,7 +349,7 @@ function RecipePreview({ result, children }: { result: RecipeResult; children: R
       <div className="mb-3 text-xs text-muted">per portion · {r.servings} portions · {r.freezerFriendly ? 'freezes well' : `fridge ${r.fridgeDays ?? 3} days`}</div>
       {result.removed.length > 0 && <p className="mb-2 rounded-lg bg-warn/10 px-2 py-1.5 text-xs text-warn">Removed: {result.removed.join(', ')}.</p>}
       {result.issues.length > 0 && <p className="mb-2 rounded-lg bg-warn/10 px-2 py-1.5 text-xs text-warn">{result.issues.join(' ')}</p>}
-      {watch.length > 0 && <p className="mb-2 rounded-lg bg-warn/10 px-2 py-1.5 text-xs text-warn">Sodium watchlist: {[...new Set(watch)].join(', ')}</p>}
+      {watch.length > 0 && <p className="mb-2 rounded-lg bg-warn/10 px-2 py-1.5 text-xs text-warn">Salt watchlist: {[...new Set(watch)].join(', ')}</p>}
       <ul className="mb-3 text-sm">
         {r.ingredients.map((i, k) => (
           <li key={k} className="flex justify-between border-b border-line py-1">
@@ -525,7 +518,7 @@ function PlanCard({ date }: { date: string }) {
                     />
                     <span className={cx('flex-1', checked.has(name) && 'text-faint line-through')}>
                       {name}
-                      {v.watch && <span className="ml-1 text-xs text-warn">sodium</span>}
+                      {v.watch && <span className="ml-1 text-xs text-warn">salt</span>}
                     </span>
                     <span className="tnum text-muted">{v.grams >= 1000 ? `${(v.grams / 1000).toFixed(2)} kg` : `${Math.round(v.grams)} g`}</span>
                   </label>
@@ -571,7 +564,7 @@ function Library() {
               <button className="w-full py-2 text-left" onClick={() => setEdit(f)}>
                 <div className="text-sm">
                   {f.name}
-                  {(f.sodiumWatch || watchlistHits(f.name).length > 0) && <span className="ml-1 text-xs text-warn">sodium</span>}
+                  {(f.sodiumWatch || watchlistHits(f.name).length > 0) && <span className="ml-1 text-xs text-warn">salt</span>}
                 </div>
                 <NutrientLine n={f.per100} />
               </button>
@@ -585,22 +578,8 @@ function Library() {
   );
 }
 
-function NutrientInputs({ n, onChange }: { n: Nutrients; onChange: (n: Nutrients) => void }) {
-  return (
-    <div className="mb-3 grid grid-cols-5 gap-2 text-center text-xs">
-      {(['kcal', 'protein', 'carbs', 'fat', 'sodiumMg'] as const).map((k) => (
-        <label key={k}>
-          <span className="text-muted">{k === 'sodiumMg' ? 'Na mg' : k === 'kcal' ? 'kcal' : k[0].toUpperCase() + k.slice(1, 4)}</span>
-          <NumInput className="mt-1 px-1 py-1.5 text-center text-sm" value={n[k]} onChange={(v) => onChange({ ...n, [k]: v ?? 0 })} />
-        </label>
-      ))}
-    </div>
-  );
-}
-
 function FoodSheet({ food, onClose }: { food: Food; onClose: () => void }) {
   const [f, setF] = useState(food);
-  const [salt, setSalt] = useState<number | null>(null);
   return (
     <Sheet open onClose={onClose} title={food.name || 'New food'}>
       <Field label="Name">
@@ -608,19 +587,11 @@ function FoodSheet({ food, onClose }: { food: Food; onClose: () => void }) {
       </Field>
       <div className="mb-1 text-sm text-muted">Per 100 g</div>
       <NutrientInputs n={f.per100} onChange={(per100) => setF({ ...f, per100 })} />
-      <Field label="Label says salt (g/100 g)? Convert to sodium" hint="sodium mg = salt g × 400">
-        <div className="flex gap-2">
-          <NumInput value={salt} onChange={setSalt} />
-          <Button disabled={salt === null} onClick={() => setF({ ...f, per100: { ...f.per100, sodiumMg: Math.round((salt ?? 0) * 400) } })}>
-            Apply
-          </Button>
-        </div>
-      </Field>
       <Field label="Serving size (g, optional)">
         <NumInput value={f.servingG} onChange={(v) => setF({ ...f, servingG: v ?? undefined })} />
       </Field>
       <label className="mb-4 flex items-center gap-2 text-sm">
-        <input type="checkbox" checked={!!f.sodiumWatch} onChange={(e) => setF({ ...f, sodiumWatch: e.target.checked })} /> On my sodium watchlist
+        <input type="checkbox" checked={!!f.sodiumWatch} onChange={(e) => setF({ ...f, sodiumWatch: e.target.checked })} /> On my salt watchlist
       </label>
       <div className="flex gap-2">
         <Button

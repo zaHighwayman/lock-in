@@ -5,7 +5,7 @@ import { startSession, weekFlags } from '../app/actions';
 import { useBodyweight, useSettings, useSyncStatus } from '../app/hooks';
 import { addDays, diffDays, formatDuration, programWeek, today, weekday, WEEKDAYS } from '../core/dates';
 import { isDeloadWeek } from '../core/rules/lifting';
-import { dayFlags, dayTotals, proteinTarget } from '../core/rules/nutrition';
+import { dayFlags, dayTotals, fmtSalt, proteinTarget } from '../core/rules/nutrition';
 import { benchmarkStatus, nextEasyKm, nextIntervals } from '../core/rules/running';
 import { save, uid } from '../db/repo';
 import { db } from '../db/schema';
@@ -127,9 +127,9 @@ export default function TodayPage() {
         {settings.sodiumCeilingMg && (
           <>
             <div className="mb-1 mt-3 flex justify-between text-sm">
-              <span>Sodium</span>
+              <span>Salt</span>
               <span className="tnum text-muted">
-                {totals.sodiumMg} / {settings.sodiumCeilingMg} mg
+                {fmtSalt(totals.sodiumMg)} / {fmtSalt(settings.sodiumCeilingMg)} g
               </span>
             </div>
             <Bar value={totals.sodiumMg} max={settings.sodiumCeilingMg} tone={totals.sodiumMg > settings.sodiumCeilingMg ? 'bad' : totals.sodiumMg > settings.sodiumCeilingMg * 0.85 ? 'warn' : 'good'} />

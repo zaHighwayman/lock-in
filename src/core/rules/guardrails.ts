@@ -24,8 +24,8 @@ const SUPPLEMENTS = /\b(creatine|pre-?workout|fat burner|supplement(s|ation)?|me
 /** Returns human-readable issues; empty when the text is clean. */
 export function checkText(text: string, p: GuardProfile = STRICT_PROFILE): string[] {
   const issues: string[] = [];
-  if (p.lowSodium && SALT_SUBSTITUTE.test(text)) issues.push('Mentions a salt substitute (potassium chloride). Not allowed on a low-sodium medical diet.');
-  if (p.lowSodium && ADD_SALT.test(text)) issues.push('Suggests adding salt or sodium.');
+  if (p.lowSodium && SALT_SUBSTITUTE.test(text)) issues.push('Mentions a salt substitute (potassium chloride). Not allowed on a low-salt medical diet.');
+  if (p.lowSodium && ADD_SALT.test(text)) issues.push('Suggests adding salt.');
   if (SKIP_MEALS.test(text)) issues.push('Suggests skipping meals.');
   if (p.proteinLocked) {
     const other = [...text.matchAll(PROTEIN_NUMBER)].map((m) => Number(m[1])).find((v) => Math.abs(v - p.proteinGPerKg) > 0.05);
@@ -57,7 +57,7 @@ export function age(birthYear: number, now = new Date()): number {
 export function constraintsText(p: GuardProfile): string {
   const lines = ['Constraints (non-negotiable, set by the athlete):'];
   if (p.lowSodium) {
-    lines.push('- Medical low-sodium diet. Never suggest adding salt or raising sodium, and never suggest any salt substitute. Prefer no-salt ingredients and point out high-sodium ones.');
+    lines.push('- Medical low-salt (low-sodium) diet. Never suggest adding salt or raising salt intake, and never suggest any salt substitute. Prefer no-salt ingredients and point out salty ones. Always talk about salt in grams, not sodium in mg.');
   }
   lines.push(
     p.proteinLocked

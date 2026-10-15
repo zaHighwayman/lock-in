@@ -6,7 +6,7 @@ import { useSettings } from '../app/hooks';
 import { fileToImagePart, getProvider, type ImagePart } from '../ai/provider';
 import { estimateFood, type FoodEstimate } from '../ai/tasks';
 import type { Food, MealSlot, Nutrients } from '../core/model';
-import { forGrams, perPortion, roundN, watchlistHits } from '../core/rules/nutrition';
+import { fmtSalt, forGrams, perPortion, roundN, saltG, sodiumMgFromSalt, watchlistHits } from '../core/rules/nutrition';
 import { save, uid } from '../db/repo';
 import { db } from '../db/schema';
 import { Button, ErrorNote, Field, inputCls, NumInput, Segmented, Sheet, cx } from '../ui/kit';
@@ -24,8 +24,32 @@ type Mode = 'scan' | 'library' | 'prep' | 'manual';
 export function NutrientLine({ n, className }: { n: Nutrients; className?: string }) {
   return (
     <span className={cx('tnum text-xs text-muted', className)}>
-      {Math.round(n.kcal)} kcal · P {Math.round(n.protein)} · C {Math.round(n.carbs)} · F {Math.round(n.fat)} · Na {Math.round(n.sodiumMg)} mg
+      {Math.round(n.kcal)} kcal · P {Math.round(n.protein)} · C {Math.round(n.carbs)} · F {Math.round(n.fat)} · salt {fmtSalt(n.sodiumMg)} g
     </span>
+  );
+}
+
+/** kcal / protein / carbs / fat / salt inputs. Salt is typed in grams and stored as sodium mg. */
+export function NutrientInputs({ n, onChange }: { n: Nutrients; onChange: (n: Nutrients) => void }) {
+  const cols = [
+    { key: 'kcal', label: 'kcal' },
+    { key: 'protein', label: 'Prot g' },
+    { key: 'carbs', label: 'Carb g' },
+    { key: 'fat', label: 'Fat g' },
+  ] as const;
+  return (
+    <div className="mb-3 grid grid-cols-5 gap-2 text-center text-xs">
+      {cols.map((c) => (
+        <label key={c.key}>
+          <span className="text-muted">{c.label}</span>
+          <NumInput className="mt-1 px-1 py-1.5 text-center text-sm" value={n[c.key]} onChange={(v) => onChange({ ...n, [c.key]: v ?? 0 })} />
+        </label>
+      ))}
+      <label>
+        <span className="text-muted">Salt g</span>
+        <NumInput className="mt-1 px-1 py-1.5 text-center text-sm" value={Math.round(saltG(n.sodiumMg) * 100) / 100} onChange={(v) => onChange({ ...n, sodiumMg: sodiumMgFromSalt(v ?? 0) })} />
+      </label>
+    </div>
   );
 }
 
@@ -133,19 +157,12 @@ function ScanFood({ date, slot, onDone }: { date: string; slot: MealSlot; onDone
         <Field label="Your portion (g)" hint={`AI estimate: ${Math.round(est.grams)} g · ${est.confidence} confidence. ${est.notes}`}>
           <NumInput value={grams} onChange={setGrams} />
         </Field>
-        <div className="mb-2 grid grid-cols-5 gap-2 text-center text-xs">
-          {(['kcal', 'protein', 'carbs', 'fat', 'sodiumMg'] as const).map((k) => (
-            <label key={k} className="block">
-              <span className="text-muted">{k === 'sodiumMg' ? 'Na mg' : k === 'kcal' ? 'kcal' : k[0].toUpperCase() + k.slice(1, 4)}</span>
-              <NumInput className="mt-1 px-1 py-1.5 text-center text-sm" value={est.per100[k]} onChange={(v) => setEst({ ...est, per100: { ...est.per100, [k]: v ?? 0 } })} />
-            </label>
-          ))}
-        </div>
+        <NutrientInputs n={est.per100} onChange={(per100) => setEst({ ...est, per100 })} />
         <p className="mb-3 text-xs text-faint">Values per 100 g. Check them against the label.</p>
         <div className="mb-3 rounded-xl bg-surface-2 p-3">
           <div className="text-sm font-medium">This portion</div>
           <NutrientLine n={n} />
-          {est.per100.sodiumMg > 400 && <div className="mt-1 text-xs text-warn">High sodium: {Math.round(est.per100.sodiumMg)} mg per 100 g.</div>}
+          {est.per100.sodiumMg > 400 && <div className="mt-1 text-xs text-warn">High salt: {fmtSalt(est.per100.sodiumMg)} g per 100 g.</div>}
         </div>
         {label && (
           <label className="mb-3 flex items-center gap-2 text-sm">
@@ -279,14 +296,7 @@ function ManualFood({ date, slot, onDone }: { date: string; slot: MealSlot; onDo
       <Field label="Name">
         <input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} />
       </Field>
-      <div className="mb-3 grid grid-cols-5 gap-2 text-center text-xs">
-        {(['kcal', 'protein', 'carbs', 'fat', 'sodiumMg'] as const).map((k) => (
-          <label key={k}>
-            <span className="text-muted">{k === 'sodiumMg' ? 'Na mg' : k === 'kcal' ? 'kcal' : k[0].toUpperCase() + k.slice(1, 4)}</span>
-            <NumInput className="mt-1 px-1 py-1.5 text-center text-sm" value={n[k]} onChange={(v) => setN({ ...n, [k]: v ?? 0 })} />
-          </label>
-        ))}
-      </div>
+      <NutrientInputs n={n} onChange={setN} />
       <Button
         variant="primary"
         className="w-full"

@@ -34,6 +34,15 @@ export function roundN(n: Nutrients): Nutrients {
   };
 }
 
+/** Salt (NaCl) is 40 % sodium: 1 g salt = 400 mg sodium. Stored values are sodium mg; people see salt g. */
+export const MG_SODIUM_PER_G_SALT = 400;
+export const saltG = (sodiumMg: number) => sodiumMg / MG_SODIUM_PER_G_SALT;
+export const sodiumMgFromSalt = (g: number) => Math.round(g * MG_SODIUM_PER_G_SALT);
+export function fmtSalt(sodiumMg: number): string {
+  const g = saltG(sodiumMg);
+  return g < 0.1 && g > 0 ? g.toFixed(2) : g.toFixed(1);
+}
+
 export const forGrams = (per100: Nutrients, grams: number) => scaleN(per100, grams / 100);
 
 export function recipeTotal(ingredients: RecipeIngredient[]): Nutrients {
@@ -96,7 +105,7 @@ export function dayFlags(totals: Nutrients, proteinTargetG: number, sodiumCeilin
       rule: 0,
       area: 'nutrition',
       level: 'warn',
-      title: `Sodium ${Math.round(totals.sodiumMg)} mg is over your ${sodiumCeilingMg} mg ceiling`,
+      title: `Salt ${fmtSalt(totals.sodiumMg)} g is over your ${fmtSalt(sodiumCeilingMg)} g limit`,
       detail: 'Check the logged items for watchlist foods (bread, cheese, ready sauces, school lunch).',
     });
   }

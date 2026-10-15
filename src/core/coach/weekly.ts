@@ -156,8 +156,8 @@ export function buildWeek(data: CoachData, refDate: string) {
       avgProteinG: avgOf('protein'),
       proteinTargetG: pTarget,
       avgKcalEstimate: avgOf('kcal'),
-      avgSodiumMg: avgOf('sodiumMg'),
-      sodiumCeilingMg: settings.sodiumCeilingMg,
+      avgSaltG: avgOf('sodiumMg') === null ? null : r1(avgOf('sodiumMg')! / 400),
+      saltLimitG: settings.sodiumCeilingMg ? r1(settings.sodiumCeilingMg / 400) : null,
     },
     flags: flags.map((f) => ({ rule: f.rule, level: f.level, title: f.title, detail: f.detail, kcalDelta: f.kcalDelta })),
   };

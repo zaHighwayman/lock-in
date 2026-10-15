@@ -18,9 +18,9 @@ Your logs never go into the repo. Only the code and seed data (program, recipes,
 
 ## 2. First-time setup in the app
 
-Settings (gear icon on Today):
+Settings (gear icon on Today) and your profile:
 
-- **Sodium ceiling**: the mg/day number from your doctor or dietitian.
+- **Profile → Salt limit**: the g/day number from your doctor or dietitian (if you were given sodium in mg, divide by 400).
 - **AI coach → Gemini API key**: create one at <https://aistudio.google.com/apikey>. The key is stored only on the device. In Google Cloud Console → Credentials, restrict the key to **HTTP referrers** `https://<your-username>.github.io/*` so it's useless anywhere else.
 - **Taste preferences** for recipes.
 - **Food → Library → Quick meals**: edit Huel / school lunch / pre-gym snack / rahka to match your real portions and labels.

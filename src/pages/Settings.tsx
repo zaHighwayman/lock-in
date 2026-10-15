@@ -5,7 +5,7 @@ import { useBodyweight, useSettings, useSyncStatus } from '../app/hooks';
 import { getProvider } from '../ai/provider';
 import { WEEKDAYS } from '../core/dates';
 import type { RunPlanDay, Settings } from '../core/model';
-import { proteinTarget } from '../core/rules/nutrition';
+import { fmtSalt, proteinTarget } from '../core/rules/nutrition';
 import { adminOverview, changePassword, createInvite, deleteAccount, signOut, type AdminOverview } from '../app/auth';
 import { currentAccount } from '../db/account';
 import { getMeta, save, setMeta } from '../db/repo';
@@ -38,8 +38,8 @@ export default function SettingsPage() {
             </span>
           </li>
           <li className="flex justify-between">
-            <span className="text-muted">Sodium</span>
-            <span className="tnum">{s.lowSodium ? `low-sodium${s.sodiumCeilingMg ? ` · ≤ ${s.sodiumCeilingMg} mg/day` : ' · set a ceiling'}` : 'normal'}</span>
+            <span className="text-muted">Salt</span>
+            <span className="tnum">{s.lowSodium ? `low-salt${s.sodiumCeilingMg ? ` · ≤ ${fmtSalt(s.sodiumCeilingMg)} g/day` : ' · set a limit'}` : 'normal'}</span>
           </li>
           {s.dietNotes && (
             <li className="flex justify-between gap-3">

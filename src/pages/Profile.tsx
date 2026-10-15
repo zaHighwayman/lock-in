@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { useBodyweight, useSettings } from '../app/hooks';
 import type { Goal, Settings } from '../core/model';
 import { maxDeficit } from '../core/rules/guardrails';
-import { proteinTarget } from '../core/rules/nutrition';
+import { proteinTarget, saltG, sodiumMgFromSalt } from '../core/rules/nutrition';
 import { save } from '../db/repo';
 import { Button, Card, Field, NumInput, Page, Segmented, cx, inputCls } from '../ui/kit';
 
@@ -80,13 +80,17 @@ export default function ProfilePage() {
         <label className="mb-3 flex items-start gap-2 text-sm">
           <input type="checkbox" className="mt-1" checked={s.lowSodium} onChange={(e) => set({ lowSodium: e.target.checked })} />
           <span>
-            Low-sodium diet (medical)
-            <span className="block text-xs text-faint">No added salt or salt substitutes in recipes, sodium watchlist, sodium limit tracking.</span>
+            Low-salt diet (medical)
+            <span className="block text-xs text-faint">No added salt or salt substitutes in recipes, salt watchlist, daily salt limit.</span>
           </span>
         </label>
         {s.lowSodium && (
-          <Field label="Sodium ceiling (mg/day)" hint="From your doctor or dietitian.">
-            <NumInput value={s.sodiumCeilingMg} onChange={(v) => set({ sodiumCeilingMg: v })} placeholder="e.g. 2000" />
+          <Field label="Salt limit (g/day)" hint="From your doctor or dietitian. If they gave it as sodium in mg, divide by 400 (2000 mg sodium = 5 g salt).">
+            <NumInput
+              value={s.sodiumCeilingMg === null ? null : Math.round(saltG(s.sodiumCeilingMg) * 10) / 10}
+              onChange={(v) => set({ sodiumCeilingMg: v === null ? null : sodiumMgFromSalt(v) })}
+              placeholder="e.g. 5"
+            />
           </Field>
         )}
         <Field label="Diet notes" hint="Allergies, foods you don't eat, other rules. The coach and recipes always respect these.">

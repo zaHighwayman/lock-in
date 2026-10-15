@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { checkText, constraintsText, forbiddenIngredient, STRICT_PROFILE, type GuardProfile } from './guardrails';
-import { dayFlags, perPortion, proteinTarget, watchlistHits } from './nutrition';
+import { dayFlags, fmtSalt, perPortion, proteinTarget, sodiumMgFromSalt, watchlistHits } from './nutrition';
 
 const n = (kcal: number, protein: number, carbs: number, fat: number, sodiumMg: number) => ({ kcal, protein, carbs, fat, sodiumMg });
 
@@ -18,7 +18,13 @@ describe('nutrition math', () => {
   it('protein target is 1.5 g/kg', () => {
     expect(proteinTarget(68, 1.5)).toBe(102);
   });
-  it('flags low protein and sodium over the ceiling', () => {
+  it('converts sodium to salt grams', () => {
+    expect(fmtSalt(2000)).toBe('5.0');
+    expect(fmtSalt(20)).toBe('0.05');
+    expect(sodiumMgFromSalt(1.2)).toBe(480);
+    expect(dayFlags(n(2400, 105, 300, 70, 2300), 102, 2000)[0].title).toBe('Salt 5.8 g is over your 5.0 g limit');
+  });
+  it('flags low protein and salt over the limit', () => {
     const f = dayFlags(n(2400, 80, 300, 70, 2300), 102, 2000);
     expect(f.map((x) => x.level)).toEqual(['info', 'warn']);
     expect(dayFlags(n(2400, 105, 300, 70, 1500), 102, 2000)).toEqual([]);
