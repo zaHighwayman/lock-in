@@ -42,6 +42,12 @@ async function check(res: Response, what: string) {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const tbl = (name: SyncedTable) => (db as any)[name] as import('dexie').Table<any, string>;
 
+const syncedListeners = new Set<() => void>();
+/** Called after every successful sync (used to unlock synced API keys). */
+export function onSynced(fn: () => void) {
+  syncedListeners.add(fn);
+}
+
 let running: Promise<void> | null = null;
 
 export function syncNow(): Promise<void> {
@@ -87,6 +93,7 @@ async function doSync() {
       if (!body.more) break;
     }
     setStatus({ state: 'idle', at: Date.now() });
+    syncedListeners.forEach((fn) => fn());
   } catch (e) {
     if (e instanceof SignedOut) setStatus({ state: 'signed-out', message: 'Session expired. Sign in again to keep syncing.', at: status.at });
     else setStatus({ state: 'error', message: e instanceof Error ? e.message : String(e), at: status.at });

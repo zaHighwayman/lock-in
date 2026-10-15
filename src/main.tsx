@@ -5,7 +5,8 @@ import App from './App';
 import { currentAccount, setAccount } from './db/account';
 import { db } from './db/schema';
 import { migrateLegacySettings, seedIfEmpty } from './db/seed';
-import { getSyncStatus, startSync, syncNow } from './db/sync';
+import { getSyncStatus, onSynced, startSync, syncNow } from './db/sync';
+import { reconcileVault } from './app/vault';
 import './index.css';
 
 registerSW({ immediate: true });
@@ -47,6 +48,7 @@ async function boot() {
   await seedIfEmpty();
   // Ask the browser to keep IndexedDB even under storage pressure.
   navigator.storage?.persist?.().catch(() => undefined);
+  onSynced(() => void reconcileVault());
   startSync();
   root.render(
     <StrictMode>

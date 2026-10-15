@@ -3,7 +3,9 @@
 import { currentAccount, dbNameFor, setAccount, type Account } from '../db/account';
 import { getMeta, setMeta } from '../db/repo';
 import { db, LockInDB, SYNCED_TABLES } from '../db/schema';
-import { workerFetch } from '../db/sync';
+import { syncNow, workerFetch } from '../db/sync';
+import { deriveVaultKey } from '../core/vault';
+import { rekeyVault } from './vault';
 
 interface AuthResult {
   token: string;
@@ -38,12 +40,12 @@ export async function hasLocalData(): Promise<boolean> {
 
 export async function signIn(server: string, username: string, password: string, copyLocal: boolean) {
   const r = await call<AuthResult>(server, '/auth/login', { username, password });
-  await enter(server, r, copyLocal);
+  await enter(server, r, copyLocal, password);
 }
 
 export async function register(server: string, username: string, password: string, invite: string, copyLocal: boolean) {
   const r = await call<AuthResult>(server, '/auth/register', { username, password, invite });
-  await enter(server, r, copyLocal);
+  await enter(server, r, copyLocal, password);
 }
 
 const LOCAL_ONLY_META = /^(auth:|sync:)/;
@@ -54,7 +56,7 @@ function restart() {
   location.reload();
 }
 
-async function enter(server: string, r: AuthResult, copyLocal: boolean) {
+async function enter(server: string, r: AuthResult, copyLocal: boolean, password: string) {
   const account: Account = { userId: r.user.id, username: r.user.username, isAdmin: r.user.isAdmin, server: server.replace(/\/$/, '') };
   const target = new LockInDB(dbNameFor(account));
   await target.open();
@@ -70,6 +72,8 @@ async function enter(server: string, r: AuthResult, copyLocal: boolean) {
     await target.meta.bulkPut((await db.meta.toArray()).filter((m) => !LOCAL_ONLY_META.test(m.key)));
   }
   await target.meta.put({ key: 'auth:token', value: r.token });
+  // unlocks the encrypted API keys synced with this account; derived here, never sent anywhere
+  await target.meta.put({ key: 'vault:key', value: await deriveVaultKey(password, account.userId) });
   target.close();
   setAccount(account);
   if (copyLocal && db.name === dbNameFor(null)) {
@@ -98,8 +102,11 @@ export async function signOut(removeData: boolean) {
   restart();
 }
 
-export function changePassword(oldPassword: string, newPassword: string) {
-  return workerFetch('/auth/password', { method: 'POST', body: JSON.stringify({ oldPassword, newPassword }) });
+export async function changePassword(oldPassword: string, newPassword: string) {
+  await workerFetch('/auth/password', { method: 'POST', body: JSON.stringify({ oldPassword, newPassword }) });
+  await rekeyVault(newPassword);
+  // push the re-encrypted keys now, so other devices never see the old encryption with the new password
+  await syncNow();
 }
 
 export async function deleteAccount(password: string) {

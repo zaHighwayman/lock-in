@@ -9,6 +9,9 @@ import { fmtSalt, proteinTarget } from '../core/rules/nutrition';
 import { adminOverview, changePassword, createInvite, deleteAccount, signOut, type AdminOverview } from '../app/auth';
 import { currentAccount } from '../db/account';
 import { getMeta, save, setMeta } from '../db/repo';
+import { db } from '../db/schema';
+import { keyEdited, reconcileVault, unlockVault, type VaultStatus } from '../app/vault';
+import { useLiveQuery } from 'dexie-react-hooks';
 import { syncNow, workerFetch } from '../db/sync';
 
 const account = currentAccount();
@@ -100,13 +103,6 @@ export default function SettingsPage() {
   );
 }
 
-function useSecret(key: string) {
-  const [v, setV] = useState('');
-  useEffect(() => {
-    getMeta<string>(key, '').then(setV);
-  }, [key]);
-  return [v, (x: string) => { setV(x); setMeta(key, x.trim()); }] as const;
-}
 
 const PROVIDER_OPTIONS: { value: AiProviderId; label: string }[] = [
   { value: 'gemini', label: 'Gemini (free tier)' },
@@ -155,11 +151,55 @@ function ModelField({ label, hint, value, onCommit, listFrom }: { label: string;
 }
 
 function KeyField({ name, label, hint }: { name: string; label: string; hint: string }) {
-  const [v, setV] = useSecret(`key:${name}`);
+  // live from the device's meta table, so keys arriving from another device show up right away
+  const value = useLiveQuery(() => db.meta.get(`key:${name}`), [name])?.value as string | undefined;
   return (
     <Field label={label} hint={hint}>
-      <input type="password" autoComplete="off" className={inputCls} value={v} onChange={(e) => setV(e.target.value)} />
+      <LiveText
+        type="password"
+        value={value ?? ''}
+        onCommit={async (v) => {
+          await setMeta(`key:${name}`, v.trim());
+          await keyEdited();
+        }}
+      />
     </Field>
+  );
+}
+
+function VaultStatusLine() {
+  const sync = useSyncStatus();
+  const [status, setStatus] = useState<VaultStatus | null>(null);
+  const [pw, setPw] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    reconcileVault().then(setStatus);
+  }, [sync.at]);
+  if (status === null) return null;
+  if (status === 'off') return <p className="mb-3 text-xs text-faint">Keys are stored only on this device. Sign in to an account to sync them (encrypted) to your other devices.</p>;
+  if (status === 'ok') return <p className="mb-3 text-xs text-good">🔒 Keys sync to your other devices, encrypted with your password. The server can't read them.</p>;
+  return (
+    <div className="mb-3 rounded-xl bg-surface-2 p-3">
+      <p className="mb-2 text-sm">
+        {status === 'wrong-password' ? "This device can't open the synced keys (password changed?). Enter your current account password." : 'Enter your account password once to sync API keys between your devices.'}
+      </p>
+      <div className="flex gap-2">
+        <input type="password" autoComplete="current-password" className={inputCls} value={pw} onChange={(e) => setPw(e.target.value)} placeholder="Account password" />
+        <Button
+          disabled={!pw}
+          onClick={async () => {
+            setErr(null);
+            const r = await unlockVault(pw);
+            if (r === 'wrong-password') setErr("That password doesn't open the synced keys.");
+            else setPw('');
+            setStatus(r);
+          }}
+        >
+          Unlock
+        </Button>
+      </div>
+      <ErrorNote error={err} />
+    </div>
   );
 }
 
@@ -242,6 +282,7 @@ function TestButton({ id, s, label }: { id: AiProviderId; s: Settings; label: st
 function AiSettings({ s, set }: { s: Settings; set: (c: Partial<Settings>) => void }) {
   return (
     <Card title="AI coach">
+      <VaultStatusLine />
       <Field label="Provider">
         <select className={inputCls} value={s.aiProvider} onChange={(e) => set({ aiProvider: e.target.value as Settings['aiProvider'] })}>
           {PROVIDER_OPTIONS.map((o) => (

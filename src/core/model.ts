@@ -274,6 +274,8 @@ export interface Settings extends Base, Profile {
   ollamaModel: string;
   ollamaUrl: string;
   workerUrl: string;
+  /** API keys, encrypted on the device with a key derived from the account password */
+  vault?: { v: 1; iv: string; ct: string };
   /** free-text food likes/dislikes for recipe generation */
   foodPreferences: string;
   lastExportAt?: number;
