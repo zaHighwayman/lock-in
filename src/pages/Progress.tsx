@@ -1,6 +1,6 @@
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useSettings } from '../app/hooks';
 import { exerciseHistories } from '../core/coach/weekly';
 import { addDays, shortDate, today } from '../core/dates';
@@ -8,20 +8,21 @@ import { avg7Series, evaluateBodyComp } from '../core/rules/bodycomp';
 import { detectStall, liftTrend, sessionScore } from '../core/rules/lifting';
 import { baseline, recoveryFlag, sleepCheck } from '../core/rules/recovery';
 import { remove, save, uid } from '../db/repo';
+import type { ActivityDay } from '../core/model';
 import { db } from '../db/schema';
 import { TimeChart } from '../ui/Chart';
-import { Button, Card, Empty, Field, FlagList, NumInput, Page, Segmented, Stat, cx, inputCls } from '../ui/kit';
+import { Bar, Button, Card, Empty, Field, FlagList, NumInput, Page, Segmented, Stat, cx, inputCls } from '../ui/kit';
 
-type Tab = 'body' | 'lifts' | 'recovery';
+type Tab = 'body' | 'lifts' | 'recovery' | 'activity';
 type Range = 30 | 90 | 365;
 
 export default function ProgressPage() {
   const [params, setParams] = useSearchParams();
-  const tab = (params.get('tab') as Tab) || 'body';
+  const tab = (params.get('tab') as Tab) || 'activity';
   const [range, setRange] = useState<Range>(90);
   return (
     <Page title="Progress">
-      <Segmented className="mb-2" value={tab} onChange={(t) => setParams({ tab: t }, { replace: true })} options={[{ value: 'body', label: 'Body' }, { value: 'lifts', label: 'Lifts' }, { value: 'recovery', label: 'Recovery' }]} />
+      <Segmented className="mb-2" value={tab} onChange={(t) => setParams({ tab: t }, { replace: true })} options={[{ value: 'activity', label: 'Activity' }, { value: 'body', label: 'Body' }, { value: 'lifts', label: 'Lifts' }, { value: 'recovery', label: 'Sleep' }]} />
       <Segmented
         className="mb-3"
         value={String(range) as '30' | '90' | '365'}
@@ -31,6 +32,7 @@ export default function ProgressPage() {
       {tab === 'body' && <Body range={range} />}
       {tab === 'lifts' && <Lifts range={range} />}
       {tab === 'recovery' && <Recovery range={range} />}
+      {tab === 'activity' && <Activity range={range} />}
     </Page>
   );
 }
@@ -301,6 +303,115 @@ function ManualSleep() {
           </Button>
         )}
       </div>
+    </Card>
+  );
+}
+
+function Activity({ range }: { range: Range }) {
+  const settings = useSettings();
+  const from = addDays(today(), -range);
+  const rows = useLiveQuery(() => db.activity.where('date').aboveOrEqual(addDays(from, -7)).toArray(), [from]) ?? [];
+  const byDate = new Map(rows.map((r) => [r.date, r]));
+  const t = byDate.get(today());
+  const last7 = Array.from({ length: 7 }, (_, i) => byDate.get(addDays(today(), -i))).filter((r): r is ActivityDay => !!r);
+  const avg = (k: 'steps' | 'activeKcal' | 'exerciseMin') => {
+    const v = last7.map((r) => r[k]).filter((x): x is number => typeof x === 'number');
+    return v.length ? Math.round(v.reduce((a, b) => a + b, 0) / v.length) : null;
+  };
+  const goal = settings.stepGoal;
+  const shown = rows.filter((r) => r.date >= from).sort((a, b) => a.date.localeCompare(b.date));
+  const lastSync = rows.filter((r) => r.source === 'apple-health').sort((a, b) => b.updatedAt - a.updatedAt)[0];
+  const fmt = (v: number | undefined | null, unit = '') => (v === undefined || v === null ? '–' : `${Math.round(v).toLocaleString('fi-FI')}${unit}`);
+
+  return (
+    <>
+      <Card title="Today">
+        <div className="mb-1 flex items-baseline justify-between">
+          <span className="text-4xl font-semibold tnum">{fmt(t?.steps)}</span>
+          <span className="text-sm text-muted tnum">/ {goal.toLocaleString('fi-FI')} steps</span>
+        </div>
+        <Bar value={t?.steps ?? 0} max={goal} tone={(t?.steps ?? 0) >= goal ? 'good' : 'accent'} />
+        <div className="mt-3 grid grid-cols-4 gap-2">
+          <Stat label="Active" value={fmt(t?.activeKcal)} sub="kcal" />
+          <Stat label="Distance" value={t?.distanceKm !== undefined ? t.distanceKm.toFixed(1) : '–'} sub="km" />
+          <Stat label="Exercise" value={fmt(t?.exerciseMin)} sub="min" />
+          <Stat label="Floors" value={fmt(t?.flights)} />
+        </div>
+        <p className="mt-3 text-xs text-faint">
+          {lastSync ? `From Apple Health, last update ${new Date(lastSync.updatedAt).toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit' })}.` : 'No Apple Health data yet.'}{' '}
+          <Link to="/health-setup" className="text-accent">
+            {lastSync ? 'Shortcut setup' : 'Connect Apple Health'}
+          </Link>
+        </p>
+      </Card>
+
+      <Card title="Last 7 days">
+        <div className="mb-3 grid grid-cols-3 gap-3">
+          <Stat label="Avg steps" value={fmt(avg('steps'))} tone={avg('steps') !== null && avg('steps')! >= goal ? 'good' : undefined} />
+          <Stat label="Avg active" value={fmt(avg('activeKcal'))} sub="kcal/day" />
+          <Stat label="Exercise" value={fmt(last7.reduce((a, r) => a + (r.exerciseMin ?? 0), 0))} sub="min total" />
+        </div>
+      </Card>
+
+      <Card title="Steps">
+        <TimeChart
+          series={[{ name: 'Steps', kind: 'bars', data: shown.filter((r) => r.steps !== undefined).map((r) => ({ date: r.date, value: r.steps! })) }]}
+          target={{ value: goal, label: `goal ${goal.toLocaleString('fi-FI')}` }}
+          zero
+          format={(v) => (v >= 1000 ? `${(v / 1000).toFixed(v >= 10000 ? 0 : 1)}k` : String(Math.round(v)))}
+          empty="Steps appear here once the Shortcut runs."
+        />
+      </Card>
+      <Card title="Active energy (kcal)">
+        <TimeChart series={[{ name: 'Active kcal', kind: 'bars', data: shown.filter((r) => r.activeKcal !== undefined).map((r) => ({ date: r.date, value: r.activeKcal! })) }]} zero format={(v) => String(Math.round(v))} />
+      </Card>
+
+      <StepGoal />
+      <ManualActivity />
+    </>
+  );
+}
+
+function StepGoal() {
+  const settings = useSettings();
+  return (
+    <Card title="Step goal">
+      <NumInput value={settings.stepGoal} onChange={(v) => v && v > 0 && save('settings', { ...settings, stepGoal: Math.round(v) })} />
+    </Card>
+  );
+}
+
+function ManualActivity() {
+  const [date, setDate] = useState(today());
+  const [steps, setSteps] = useState<number | null>(null);
+  const [kcal, setKcal] = useState<number | null>(null);
+  const existing = useLiveQuery(() => db.activity.get(`activity-${date}`), [date]);
+  return (
+    <Card title="Enter by hand">
+      <p className="mb-2 text-xs text-faint">For days the Shortcut missed. The next Shortcut run for that day overwrites these.</p>
+      <Field label="Date">
+        <input type="date" className={inputCls} value={date} max={today()} onChange={(e) => setDate(e.target.value)} />
+      </Field>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Steps">
+          <NumInput value={steps} onChange={setSteps} placeholder={existing?.steps?.toString()} />
+        </Field>
+        <Field label="Active kcal">
+          <NumInput value={kcal} onChange={setKcal} placeholder={existing?.activeKcal?.toString()} />
+        </Field>
+      </div>
+      <Button
+        variant="primary"
+        className="w-full"
+        disabled={steps === null && kcal === null}
+        onClick={async () => {
+          await save('activity', { ...(existing ?? { source: 'manual' as const }), id: `activity-${date}`, date, steps: steps ?? existing?.steps, activeKcal: kcal ?? existing?.activeKcal });
+          setSteps(null);
+          setKcal(null);
+        }}
+      >
+        Save
+      </Button>
     </Card>
   );
 }

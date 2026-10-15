@@ -15,6 +15,7 @@ import SettingsPage from './pages/Settings';
 import ImportPage from './pages/Import';
 import LoginPage from './pages/Login';
 import ProfilePage from './pages/Profile';
+import HealthSetupPage from './pages/HealthSetup';
 
 const TABS = [
   { to: '/', label: 'Today', icon: 'M4 12h16M12 4v16' },
@@ -74,6 +75,7 @@ export default function App() {
         <Route path="/import" element={<ImportPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/profile" element={<ProfilePage />} />
+        <Route path="/health-setup" element={<HealthSetupPage />} />
       </Routes>
       <TabBar />
     </HashRouter>

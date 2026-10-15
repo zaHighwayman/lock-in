@@ -148,7 +148,7 @@ export async function logRecipePortion(recipe: Recipe, date = today(), slot: Mea
 
 export async function loadCoachData(sinceDays = 70): Promise<CoachData> {
   const from = addDays(today(), -sinceDays);
-  const [settings, exercises, sessions, sets, runs, body, sleep, food] = await Promise.all([
+  const [settings, exercises, sessions, sets, runs, body, sleep, food, activity] = await Promise.all([
     getSettings(),
     db.exercises.toArray(),
     db.sessions.where('date').aboveOrEqual(from).toArray(),
@@ -157,8 +157,9 @@ export async function loadCoachData(sinceDays = 70): Promise<CoachData> {
     db.body.where('date').aboveOrEqual(from).toArray(),
     db.sleep.where('date').aboveOrEqual(from).toArray(),
     db.foodLog.where('date').aboveOrEqual(from).toArray(),
+    db.activity.where('date').aboveOrEqual(from).toArray(),
   ]);
-  return { settings, exercises, sessions, sets, runs, body, sleep, food };
+  return { settings, exercises, sessions, sets, runs, body, sleep, food, activity };
 }
 
 export async function weekFlags(refDate = today()) {

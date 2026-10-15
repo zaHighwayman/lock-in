@@ -50,6 +50,8 @@ function DayLog() {
   const [editing, setEditing] = useState<FoodLogEntry | null>(null);
   const entries = useLiveQuery(() => db.foodLog.where('date').equals(date).toArray(), [date]) ?? [];
   const totals = dayTotals(entries);
+  const cron = entries.find((e) => e.source === 'cronometer');
+  const own = dayTotals(entries.filter((e) => e.source !== 'cronometer'));
   const pTarget = proteinTarget(bw, settings.proteinGPerKg);
 
   return (
@@ -74,6 +76,22 @@ function DayLog() {
           <Stat label="Fat" value={`${Math.round(totals.fat)} g`} />
         </div>
         <Bar value={totals.protein} max={pTarget} tone={totals.protein >= pTarget ? 'good' : 'accent'} />
+        {cron && (
+          <div className="mt-3 grid grid-cols-3 gap-2 rounded-xl bg-surface-2 p-2 text-center text-xs tnum">
+            <div>
+              <div className="text-muted">Lock-In</div>
+              <div>{own.kcal} kcal · {Math.round(own.protein)} g P</div>
+            </div>
+            <div>
+              <div className="text-muted">Cronometer</div>
+              <div>{Math.round(cron.nutrients.kcal)} kcal · {Math.round(cron.nutrients.protein)} g P</div>
+            </div>
+            <div>
+              <div className="text-muted">Total</div>
+              <div className="font-semibold text-ink">{totals.kcal} kcal · {Math.round(totals.protein)} g P</div>
+            </div>
+          </div>
+        )}
         <div className="mt-3 flex justify-between text-sm">
           <span className="text-muted">Salt</span>
           <span className={cx('tnum', settings.sodiumCeilingMg && totals.sodiumMg > settings.sodiumCeilingMg ? 'text-bad' : 'text-ink')}>
@@ -90,8 +108,21 @@ function DayLog() {
         <QuickMeals date={date} />
       </Card>
 
+      {cron && (
+        <Card title="Cronometer">
+          <button className="w-full text-left" onClick={() => setEditing(cron)}>
+            <div className="flex justify-between gap-2 text-sm">
+              <span>Day total from Cronometer</span>
+              <span className="tnum text-muted">{Math.round(cron.nutrients.protein)} g P</span>
+            </div>
+            <NutrientLine n={cron.nutrients} />
+          </button>
+          <p className="mt-1 text-xs text-faint">Synced via Apple Health. Counted in the totals above together with what you log here.</p>
+        </Card>
+      )}
+
       {SLOTS.map((slot) => {
-        const list = entries.filter((e) => e.slot === slot.value);
+        const list = entries.filter((e) => e.slot === slot.value && e.source !== 'cronometer');
         if (list.length === 0) return null;
         return (
           <Card key={slot.value} title={slot.label}>

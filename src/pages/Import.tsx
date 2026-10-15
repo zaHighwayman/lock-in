@@ -6,6 +6,7 @@ import type { SetLog, WorkoutSession } from '../core/model';
 import { save, saveMany, uid } from '../db/repo';
 import { db } from '../db/schema';
 import { detectFormat, guessMapping, parseCsv, toSets, type CsvFormat, type GenericMapping, type ImportedSet } from '../import/csv';
+import { cronometerEntry, parseCronometerDaily } from '../import/cronometer';
 import { Button, Card, ErrorNote, Field, Page, cx, inputCls } from '../ui/kit';
 
 const NEW = '__new__';
@@ -98,7 +99,7 @@ export default function ImportPage() {
   }
 
   return (
-    <Page title="Import workouts" back={() => nav(-1)}>
+    <Page title="Import" back={() => nav(-1)}>
       <Card>
         <p className="mb-3 text-sm text-muted">Strong and Hevy exports are detected automatically. Any other CSV works if it has date, exercise, weight and reps columns (a notebook typed into a spreadsheet is fine).</p>
         <label>
@@ -166,6 +167,39 @@ export default function ImportPage() {
           )}
         </Card>
       )}
+      <CronometerImport />
     </Page>
+  );
+}
+
+function CronometerImport() {
+  const [msg, setMsg] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <Card title="Cronometer history">
+      <p className="mb-3 text-sm text-muted">
+        On cronometer.com: Settings → Account → <b>Export Data</b> → <b>Daily Nutrition</b>. Each day becomes one "Cronometer (day total)" entry, the same one the Apple Health Shortcut updates, so days are never counted twice.
+      </p>
+      <label>
+        <span className="inline-flex w-full cursor-pointer justify-center rounded-xl border border-line bg-surface-2 px-4 py-2.5 font-medium">Choose Daily Nutrition CSV</span>
+        <input
+          type="file"
+          accept=".csv,text/csv"
+          className="hidden"
+          onChange={async (e) => {
+            const f = e.target.files?.[0];
+            if (!f) return;
+            setError(null);
+            setMsg(null);
+            const { days, missing } = parseCronometerDaily(await f.text());
+            if (days.length === 0) return setError(`No days found${missing.length ? ` (missing columns: ${missing.join(', ')})` : ''}. Is this the Daily Nutrition export?`);
+            await saveMany('foodLog', days.map(cronometerEntry));
+            setMsg(`Imported ${days.length} days (${days[0].date} – ${days[days.length - 1].date}).${missing.length ? ` Not in file: ${missing.join(', ')}.` : ''}`);
+          }}
+        />
+      </label>
+      {msg && <p className="mt-2 text-sm text-good">{msg}</p>}
+      <ErrorNote error={error} />
+    </Card>
   );
 }

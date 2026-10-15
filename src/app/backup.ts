@@ -69,6 +69,7 @@ export const CSV_EXPORTS = {
   body: 'Body metrics',
   sleep: 'Sleep & recovery',
   food: 'Food log',
+  activity: 'Activity',
 } as const;
 
 export async function exportCsv(kind: keyof typeof CSV_EXPORTS) {
@@ -84,6 +85,8 @@ export async function exportCsv(kind: keyof typeof CSV_EXPORTS) {
     rows = [['date', 'weight_kg', 'waist_cm', 'body_fat_pct', 'source'], ...(await db.body.orderBy('date').toArray()).map((b) => [b.date, b.weightKg, b.waistCm, b.bodyFatPct, b.source])];
   } else if (kind === 'sleep') {
     rows = [['date', 'sleep_min', 'bedtime', 'wake', 'resting_hr', 'hrv', 'readiness', 'source'], ...(await db.sleep.orderBy('date').toArray()).map((s) => [s.date, s.sleepMin, s.bedtime, s.wakeTime, s.restingHr, s.hrv, s.readiness, s.source])];
+  } else if (kind === 'activity') {
+    rows = [['date', 'steps', 'active_kcal', 'distance_km', 'exercise_min', 'flights', 'source'], ...(await db.activity.orderBy('date').toArray()).map((a) => [a.date, a.steps, a.activeKcal, a.distanceKm, a.exerciseMin, a.flights, a.source])];
   } else {
     rows = [['date', 'meal', 'name', 'grams', 'kcal', 'protein_g', 'carbs_g', 'fat_g', 'salt_g'], ...(await db.foodLog.orderBy('date').toArray()).map((f) => [f.date, f.slot, f.name, f.grams, f.nutrients.kcal, f.nutrients.protein, f.nutrients.carbs, f.nutrients.fat, Math.round(f.nutrients.sodiumMg / 4) / 100])];
   }

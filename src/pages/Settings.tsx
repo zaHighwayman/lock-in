@@ -520,7 +520,14 @@ function IntegrationsCard() {
   }
 
   return (
-    <Card title="Withings & Oura">
+    <Card title="Apple Health, Withings & Oura">
+      <Link to="/health-setup" className="mb-3 flex items-center justify-between rounded-xl border border-line bg-surface-2 px-3 py-2.5">
+        <span>
+          <span className="block font-medium">Apple Health</span>
+          <span className="block text-xs text-muted">Steps, activity and Cronometer nutrition via an iPhone Shortcut</span>
+        </span>
+        <span className="text-muted">›</span>
+      </Link>
       {!account && <p className="mb-3 text-sm text-muted">Needs an account (see Account above).</p>}
       <div className="grid grid-cols-2 gap-2">
         <Button onClick={() => connect('withings')} disabled={!account}>

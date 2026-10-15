@@ -1,6 +1,6 @@
 // Runs every rule for one week and builds the compact, aggregated JSON the LLM sees.
 import { addDays, programWeek, weekStart as wkStart } from '../dates';
-import type { BodyMetric, Exercise, Flag, FoodLogEntry, Run, SetLog, Settings, SleepRecovery, WorkoutSession } from '../model';
+import type { ActivityDay, BodyMetric, Exercise, Flag, FoodLogEntry, Run, SetLog, Settings, SleepRecovery, WorkoutSession } from '../model';
 import { avg7, evaluateBodyComp } from '../rules/bodycomp';
 import {
   detectStall, dropShare, isDeloadWeek, liftTrend, sessionScore, stallFlag, suggestNext,
@@ -19,6 +19,7 @@ export interface CoachData {
   body: BodyMetric[];
   sleep: SleepRecovery[];
   food: FoodLogEntry[];
+  activity?: ActivityDay[];
 }
 
 /** Group completed sets by exercise into per-session histories, oldest first. */
@@ -121,6 +122,13 @@ export function buildWeek(data: CoachData, refDate: string) {
   const dayTot = days.map((d) => dayTotals(weekFood.filter((f) => f.date === d)));
   const avgOf = (k: 'protein' | 'kcal' | 'sodiumMg') => (dayTot.length ? Math.round(dayTot.reduce((a, t) => a + t[k], 0) / dayTot.length) : null);
 
+  // Activity (Apple Health)
+  const weekActivity = (data.activity ?? []).filter((a) => inWeek(a.date));
+  const avgAct = (k: 'steps' | 'activeKcal') => {
+    const v = weekActivity.map((a) => a[k]).filter((x): x is number => typeof x === 'number');
+    return v.length ? Math.round(v.reduce((a, b) => a + b, 0) / v.length) : null;
+  };
+
   const input = {
     week: { start: ws, end: we, programWeek: week, deload: deloadNow, deloadNext, goal: settings.goal },
     lifting: {
@@ -158,6 +166,13 @@ export function buildWeek(data: CoachData, refDate: string) {
       avgKcalEstimate: avgOf('kcal'),
       avgSaltG: avgOf('sodiumMg') === null ? null : r1(avgOf('sodiumMg')! / 400),
       saltLimitG: settings.sodiumCeilingMg ? r1(settings.sodiumCeilingMg / 400) : null,
+    },
+    activity: {
+      daysWithData: weekActivity.length,
+      avgSteps: avgAct('steps'),
+      stepGoal: settings.stepGoal,
+      avgActiveKcal: avgAct('activeKcal'),
+      exerciseMinTotal: weekActivity.length ? Math.round(weekActivity.reduce((a, d) => a + (d.exerciseMin ?? 0), 0)) : null,
     },
     flags: flags.map((f) => ({ rule: f.rule, level: f.level, title: f.title, detail: f.detail, kcalDelta: f.kcalDelta })),
   };

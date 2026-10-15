@@ -2,7 +2,7 @@
 import Dexie, { type Table } from 'dexie';
 import { currentAccount, dbNameFor } from './account';
 import type {
-  BodyMetric, ChatMessage, CoachReport, Exercise, Food, FoodLogEntry, MealPlan, MealPrepBatch, ProgramDay,
+  ActivityDay, BodyMetric, ChatMessage, CoachReport, Exercise, Food, FoodLogEntry, MealPlan, MealPrepBatch, ProgramDay,
   Recipe, RecipeFeedback, Run, SavedMeal, SetLog, Settings, SleepRecovery, WorkoutSession,
 } from '../core/model';
 
@@ -38,6 +38,7 @@ export class LockInDB extends Dexie {
   runs!: Table<Run, string>;
   body!: Table<BodyMetric, string>;
   sleep!: Table<SleepRecovery, string>;
+  activity!: Table<ActivityDay, string>;
   foods!: Table<Food, string>;
   foodLog!: Table<FoodLogEntry, string>;
   savedMeals!: Table<SavedMeal, string>;
@@ -78,6 +79,7 @@ export class LockInDB extends Dexie {
       photos: 'id, date',
       meta: 'key',
     });
+    this.version(2).stores({ activity: 'id, date, updatedAt' });
   }
 }
 
@@ -87,7 +89,7 @@ export const db = new LockInDB(dbNameFor(currentAccount()));
 /** Tables that sync to the Worker. Photos and meta (incl. API keys) stay on the device. */
 export const SYNCED_TABLES = [
   'exercises', 'programDays', 'sessions', 'sets', 'runs', 'body', 'sleep', 'foods', 'foodLog',
-  'savedMeals', 'recipes', 'recipeFeedback', 'batches', 'mealPlans', 'coachReports', 'chat', 'settings', 'aliases',
+  'savedMeals', 'recipes', 'recipeFeedback', 'batches', 'mealPlans', 'coachReports', 'chat', 'settings', 'aliases', 'activity',
 ] as const;
 export type SyncedTable = (typeof SYNCED_TABLES)[number];
 
@@ -110,4 +112,5 @@ export interface TableTypes {
   chat: ChatMessage;
   settings: Settings;
   aliases: Alias & { updatedAt: number };
+  activity: ActivityDay;
 }

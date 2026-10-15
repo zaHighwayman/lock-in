@@ -3,6 +3,7 @@
 // - /admin/*: the admin (first account) creates invite codes and sees who has an account
 // - /sync/push, /sync/pull: last-write-wins record sync, partitioned per user
 // - /oauth/:provider/start|callback + daily cron: per-user Withings + Oura pulls
+// - /ingest/health: the user's iPhone Shortcut posts Apple Health day totals (activity + Cronometer nutrition)
 // Every user only ever reads and writes rows with their own user_id.
 
 export interface Env {
@@ -37,7 +38,7 @@ interface SyncRecord {
 
 const ALLOWED_TABLES = new Set([
   'exercises', 'programDays', 'sessions', 'sets', 'runs', 'body', 'sleep', 'foods', 'foodLog',
-  'savedMeals', 'recipes', 'recipeFeedback', 'batches', 'mealPlans', 'coachReports', 'chat', 'settings', 'aliases',
+  'savedMeals', 'recipes', 'recipeFeedback', 'batches', 'mealPlans', 'coachReports', 'chat', 'settings', 'aliases', 'activity',
 ]);
 
 const DAY = 86_400_000;
@@ -489,6 +490,73 @@ async function runIntegrations(env: Env, userId: string, days = 3) {
   return out;
 }
 
+// ---------------------------------------------------------------- apple health (iPhone Shortcut)
+
+/** New Shortcut key for this user; replaces the previous one. Shown once. */
+async function createIngestKey(env: Env, user: User) {
+  const key = `lih_${randomToken(24)}`;
+  await env.DB.prepare('UPDATE users SET ingest_hash = ? WHERE id = ?').bind(await sha256(key), user.id).run();
+  return { key };
+}
+
+/** Numbers from Shortcuts can arrive as numbers or locale text ("8 412", "5,2 km"). */
+function num(v: unknown): number | undefined {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : undefined;
+  if (typeof v !== 'string') return undefined;
+  const cleaned = v.replace(/\s|\u00a0/g, '').replace(',', '.').match(/-?\d+(\.\d+)?/);
+  return cleaned ? Number(cleaned[0]) : undefined;
+}
+
+const ACTIVITY_FIELDS = ['steps', 'activeKcal', 'distanceKm', 'exerciseMin', 'flights'] as const;
+const NUTRITION_FIELDS = { dietKcal: 'kcal', protein: 'protein', carbs: 'carbs', fat: 'fat', sodiumMg: 'sodiumMg' } as const;
+
+async function ingestHealth(req: Request, env: Env) {
+  const h = req.headers.get('Authorization') ?? '';
+  const key = h.startsWith('Bearer ') ? h.slice(7).trim() : '';
+  if (!key) throw new HttpError(401, 'Missing Shortcut key.');
+  const user = await env.DB.prepare('SELECT id FROM users WHERE ingest_hash = ?').bind(await sha256(key)).first<{ id: string }>();
+  if (!user) throw new HttpError(401, 'Unknown Shortcut key. Create a new one in Lock-In → Settings → Apple Health.');
+
+  const b = await body<Record<string, unknown>>(req);
+  const date = typeof b.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.date.trim()) ? b.date.trim() : helsinkiDate(new Date());
+  const now = Date.now();
+  const existing = async (tbl: string, id: string) => {
+    const row = await env.DB.prepare('SELECT data FROM records WHERE user_id = ? AND tbl = ? AND id = ? AND deleted = 0').bind(user.id, tbl, id).first<{ data: string }>();
+    return row ? (JSON.parse(row.data) as Record<string, unknown>) : {};
+  };
+  const records: SyncRecord[] = [];
+  const saved: string[] = [];
+
+  // activity: merge so a partial send never erases fields sent earlier the same day
+  const activity: Record<string, number> = {};
+  for (const f of ACTIVITY_FIELDS) {
+    const v = num(b[f]);
+    if (v !== undefined && v >= 0) activity[f] = f === 'steps' || f === 'flights' ? Math.round(v) : Math.round(v * 100) / 100;
+  }
+  if (Object.keys(activity).length) {
+    const id = `activity-${date}`;
+    records.push({ table: 'activity', id, updatedAt: now, deleted: false, data: { ...(await existing('activity', id)), ...activity, id, date, updatedAt: now, source: 'apple-health' } });
+    saved.push(...Object.keys(activity));
+  }
+
+  // nutrition written to Apple Health by Cronometer → one "day total" food entry
+  const nutrition: Record<string, number> = {};
+  for (const [f, k] of Object.entries(NUTRITION_FIELDS)) {
+    const v = num(b[f]);
+    if (v !== undefined && v >= 0) nutrition[k] = Math.round(v * 10) / 10;
+  }
+  if ((nutrition.kcal ?? 0) > 0 || (nutrition.protein ?? 0) > 0) {
+    const id = `cronometer-${date}`;
+    const prev = (await existing('foodLog', id)).nutrients as Record<string, number> | undefined;
+    const nutrients = { kcal: 0, protein: 0, carbs: 0, fat: 0, sodiumMg: 0, ...(prev ?? {}), ...nutrition };
+    records.push({ table: 'foodLog', id, updatedAt: now, deleted: false, data: { id, updatedAt: now, date, slot: 'snack', name: 'Cronometer (day total)', nutrients, source: 'cronometer' } });
+    saved.push('nutrition');
+  }
+
+  await upsert(env, user.id, records);
+  return { ok: true, date, saved };
+}
+
 // ---------------------------------------------------------------- router
 
 async function body<T>(req: Request): Promise<T> {
@@ -503,6 +571,7 @@ async function route(req: Request, env: Env, url: URL): Promise<unknown> {
   const { pathname } = url;
   const post = req.method === 'POST';
 
+  if (pathname === '/ingest/health' && post) return ingestHealth(req, env);
   if (pathname === '/auth/register' && post) return register(env, await body(req));
   if (pathname === '/auth/login' && post) return login(env, await body(req));
   if (pathname === '/auth/status' && req.method === 'GET') {
@@ -524,6 +593,8 @@ async function route(req: Request, env: Env, url: URL): Promise<unknown> {
     await deleteAccount(env, user, await body(req));
     return { ok: true };
   }
+
+  if (pathname === '/health/key' && post) return createIngestKey(env, user);
 
   if (pathname === '/admin/overview' && req.method === 'GET') {
     requireAdmin(user);

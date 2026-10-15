@@ -134,6 +134,7 @@ export const DEFAULT_SETTINGS: Settings = {
   ollamaUrl: 'http://localhost:11434',
   workerUrl: '',
   foodPreferences: '',
+  stepGoal: 10000,
 };
 
 /** Stored settings over defaults, so fields added in later versions always have a value. */

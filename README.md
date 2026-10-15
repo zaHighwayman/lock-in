@@ -69,7 +69,15 @@ To skip typing the server address on every device, add a repo variable `SERVER_U
 
 Each person then taps **Connect Withings** / **Connect Oura** in their own Settings. The first connect backfills 30 days; after that a cron pulls daily for everyone who connected. If a sync errors, the message shows in Settings and everything can still be entered by hand.
 
-## 4. Ollama (optional, PC only)
+## 4. Apple Health and Cronometer
+
+A web app can't read Apple Health, so an **iPhone Shortcut** reads today's totals (steps, active energy, distance, exercise minutes, floors, plus the nutrition Cronometer writes into Health) and posts them to the server with a personal *Shortcut key*. Follow the in-app guide: **Settings → Apple Health** (needs an account). An automation runs it daily; add extra times for updates during the day.
+
+**Cronometer**: turn on Cronometer → More → Connect Apps & Devices → Apple Health, and include the nutrition rows in the Shortcut. Its day total shows as its own line in the food log, next to what you log in Lock-In, and the day's totals add both. For older days, import the **Daily Nutrition** CSV (cronometer.com → Settings → Account → Export Data) under Train → Import CSV.
+
+After updating to this version, run `npm run db:migrate` and `npm run deploy` in `worker/` (new migration + endpoint).
+
+## 5. Ollama (optional, PC only)
 
 ```bash
 OLLAMA_ORIGINS=https://<your-username>.github.io ollama serve

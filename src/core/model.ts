@@ -135,6 +135,19 @@ export interface FoodLogEntry extends Base {
   nutrients: Nutrients;
   ref?: { kind: 'food' | 'recipe' | 'batch' | 'meal'; id: ID };
   estimated?: boolean;
+  /** set on entries that come from outside the app (Cronometer day totals via Apple Health or CSV) */
+  source?: 'cronometer';
+}
+
+/** Daily activity from Apple Health (via the iPhone Shortcut) or typed in. */
+export interface ActivityDay extends Base {
+  date: string;
+  steps?: number;
+  activeKcal?: number;
+  distanceKm?: number;
+  exerciseMin?: number;
+  flights?: number;
+  source: 'apple-health' | 'manual';
 }
 
 /** One-tap meals ("Huel breakfast", "Evening rahka"). */
@@ -276,6 +289,7 @@ export interface Settings extends Base, Profile {
   workerUrl: string;
   /** API keys, encrypted on the device with a key derived from the account password */
   vault?: { v: 1; iv: string; ct: string };
+  stepGoal: number;
   /** free-text food likes/dislikes for recipe generation */
   foodPreferences: string;
   lastExportAt?: number;

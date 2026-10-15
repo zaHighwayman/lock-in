@@ -19,6 +19,11 @@ function data(): CoachData {
     runs: [{ id: 'r1', updatedAt: 0, date: addDays(REF, -1), type: 'benchmark', distanceKm: 4, durationSec: 1190 }],
     body: [...body, { id: 'w1', updatedAt: 0, date: addDays(REF, -28), waistCm: 76, source: 'manual' }, { id: 'w2', updatedAt: 0, date: REF, waistCm: 75.5, source: 'manual' }],
     sleep: [],
+    activity: [
+      { id: 'a1', updatedAt: 0, date: addDays(REF, -1), steps: 8000, activeKcal: 500, exerciseMin: 30, source: 'apple-health' },
+      { id: 'a2', updatedAt: 0, date: REF, steps: 10000, activeKcal: 600, exerciseMin: 40, source: 'apple-health' },
+      { id: 'a0', updatedAt: 0, date: addDays(REF, -9), steps: 99999, source: 'apple-health' },
+    ],
     food: [{ id: 'f1', updatedAt: 0, date: REF, slot: 'dinner', name: 'Chili', nutrients: { kcal: 650, protein: 50, carbs: 70, fat: 15, sodiumMg: 300 } }],
   };
 }
@@ -34,6 +39,7 @@ describe('weekly build', () => {
     expect(w.input.lifting.lifts[0]).toMatchObject({ exercise: 'Bench press', pr: true });
     expect(w.input.running.thisWeekBenchmark).toEqual([1190]);
     expect(w.input.nutrition.proteinTargetG).toBe(102);
+    expect(w.input.activity).toMatchObject({ daysWithData: 2, avgSteps: 9000, exerciseMinTotal: 70 });
   });
   it('contains only aggregates, no raw daily weights or food names', () => {
     const json = JSON.stringify(buildWeek(data(), REF).input);

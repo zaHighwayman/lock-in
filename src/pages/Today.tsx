@@ -26,6 +26,8 @@ export default function TodayPage() {
   const runsToday = useLiveQuery(() => db.runs.where('date').equals(d).toArray(), [d]) ?? [];
   const allRuns = useLiveQuery(() => db.runs.toArray(), []) ?? [];
   const food = useLiveQuery(() => db.foodLog.where('date').equals(d).toArray(), [d]) ?? [];
+  const activity = useLiveQuery(() => db.activity.get(`activity-${d}`), [d]);
+  const hasHealth = useLiveQuery(async () => (await db.activity.count()) > 0, []);
   const bodyToday = useLiveQuery(() => db.body.where('date').equals(d).toArray(), [d]) ?? [];
   const lastWaist = useLiveQuery(() => db.body.orderBy('date').reverse().filter((b) => b.waistCm !== undefined).first(), []);
   const week = useLiveQuery(() => weekFlags(d), [d, sessionsToday.length, runsToday.length, bodyToday.length]);
@@ -137,9 +139,29 @@ export default function TodayPage() {
         )}
         <div className="mb-3 mt-2 text-xs text-muted tnum">
           ~{totals.kcal} kcal · C {Math.round(totals.carbs)} · F {Math.round(totals.fat)}
+          {food.some((f) => f.source === 'cronometer') && <span className="text-faint"> · incl. Cronometer</span>}
         </div>
         <QuickMeals date={d} />
       </Card>
+
+      <Link to="/progress?tab=activity" className="mb-3 block rounded-2xl border border-line bg-surface p-4">
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">Activity</h2>
+          <span className="text-sm text-muted">›</span>
+        </div>
+        {activity?.steps !== undefined ? (
+          <>
+            <div className="mb-1 flex items-baseline justify-between tnum">
+              <span className="text-2xl font-semibold">{activity.steps.toLocaleString('fi-FI')}</span>
+              <span className="text-sm text-muted">/ {settings.stepGoal.toLocaleString('fi-FI')} steps</span>
+            </div>
+            <Bar value={activity.steps} max={settings.stepGoal} tone={activity.steps >= settings.stepGoal ? 'good' : 'accent'} />
+            {activity.activeKcal !== undefined && <div className="mt-2 text-xs text-muted tnum">{Math.round(activity.activeKcal)} kcal active{activity.exerciseMin !== undefined ? ` · ${Math.round(activity.exerciseMin)} min exercise` : ''}</div>}
+          </>
+        ) : (
+          <p className="text-sm text-muted">{hasHealth ? 'No steps yet today. The Shortcut sends them during the day.' : 'Connect Apple Health to see steps and activity here.'}</p>
+        )}
+      </Link>
 
       {!bodyToday.some((b) => b.weightKg) && <WeighIn date={d} />}
       {(!lastWaist || diffDays(d, lastWaist.date) >= 7) && <WaistPrompt date={d} />}
